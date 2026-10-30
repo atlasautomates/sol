@@ -2,6 +2,7 @@ import Foundation
 import ImageIO
 import CoreGraphics
 import UniformTypeIdentifiers
+import SQLite3
 
 // Lead-authored acceptance tests for ticket 01. The implementer must not edit
 // this file. The module under test is FileIndex. Construct it with a database
@@ -34,6 +35,9 @@ import UniformTypeIdentifiers
 //   with no place name, and a coordinate string do not.
 // - A place match sits in the same tier as a date match, below path and
 //   name. A file that also matches a better tier appears once, in that tier.
+// - A database stored before clock and place columns existed is walked once
+//   on the next open. After that walk, a date query and a place query find
+//   the files that were already stored. The open after that does not walk.
 
 private var failures: [String] = []
 
@@ -566,6 +570,71 @@ private func testNameAndPlaceAppearsOnce() {
   check(nameIndex < placeIndex, "the name match ranks above the place match, got \(names)")
 }
 
+private func writeLegacyDatabase(at root: URL, folder: String, files: [(path: String, name: String, parent: String)]) {
+  var db: OpaquePointer?
+  let path = root.appendingPathComponent("filesearch.db").path
+  guard sqlite3_open(path, &db) == SQLITE_OK else {
+    check(false, "could not create a legacy database")
+    return
+  }
+  defer { sqlite3_close(db) }
+  let schema = """
+    CREATE TABLE files (
+      path TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      is_folder INTEGER NOT NULL,
+      parent_path TEXT,
+      indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE search_folders (path TEXT PRIMARY KEY);
+    """
+  sqlite3_exec(db, schema, nil, nil, nil)
+  var insert: OpaquePointer?
+  sqlite3_prepare_v2(db, "INSERT INTO files (path, name, is_folder, parent_path) VALUES (?, ?, 0, ?);", -1, &insert, nil)
+  for file in files {
+    sqlite3_reset(insert)
+    sqlite3_bind_text(insert, 1, file.path, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(insert, 2, file.name, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(insert, 3, file.parent, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_step(insert)
+  }
+  sqlite3_finalize(insert)
+  var folderInsert: OpaquePointer?
+  sqlite3_prepare_v2(db, "INSERT INTO search_folders (path) VALUES (?);", -1, &folderInsert, nil)
+  sqlite3_bind_text(folderInsert, 1, folder, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+  sqlite3_step(folderInsert)
+  sqlite3_finalize(folderInsert)
+}
+
+private func testLegacyIndexIsFilledOnce() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("kept", isDirectory: true)
+  write(folder, "notes.txt")
+  let dated = localDate(2018, 7, 9, 16, 40)
+  setClocks(folder, "notes.txt", created: localDate(2010, 1, 1, 8, 0), modified: dated)
+  writePhoto(folder, "city.jpg", city: "Paris")
+  let notes = folder.appendingPathComponent("notes.txt").path
+  let photo = folder.appendingPathComponent("city.jpg").path
+  writeLegacyDatabase(at: root, folder: folder.path, files: [
+    (notes, "notes.txt", folder.path),
+    (photo, "city.jpg", folder.path),
+  ])
+
+  do {
+    let store = index(at: root)
+    waitFor { store.setSearchFolders([folder.path], completion: $0) }
+    check(store.search(query: "2018-07-09").map(\.name).contains("notes.txt"), "a date query finds a file that was already stored")
+    check(store.search(query: "Paris").map(\.name).contains("city.jpg"), "a place query finds a file that was already stored")
+  }
+
+  write(folder, "late.txt")
+  let again = index(at: root)
+  waitFor { again.setSearchFolders([folder.path], completion: $0) }
+  check(again.search(query: "late").isEmpty, "the launch after the backfill does not walk again")
+  check(again.search(query: "Paris").map(\.name).contains("city.jpg"), "the filled place is still searchable")
+}
+
 let tests: [(String, () -> Void)] = [
   ("name contains is case insensitive", testNameContainsIsCaseInsensitive),
   ("higher fuzzy score ranks first", testHigherFuzzyScoreRanksFirst),
@@ -590,6 +659,7 @@ let tests: [(String, () -> Void)] = [
   ("a coordinate is not a place", testCoordinateIsNotAPlace),
   ("a place match ranks with dates below path and name", testPlaceRanksWithDatesBelowPathAndName),
   ("a name and a place appear once", testNameAndPlaceAppearsOnce),
+  ("a legacy index is filled once", testLegacyIndexIsFilledOnce),
 ]
 
 @main
