@@ -52,11 +52,9 @@ declare const global: {
 		searchFilesIndexed: (
 			query: string,
 		) => Promise<{ name: string; path: string; isFolder: boolean }[]>;
-		hasIndexedContent: () => boolean;
-		indexPaths: (paths: string[]) => Promise<void>;
-		startWatchingPaths: (paths: string[]) => void;
-		removeIndexedPath: (path: string) => Promise<void>;
-		clearIndex: () => void;
+		setSearchFolders: (paths: string[]) => Promise<void>;
+		reindex: () => Promise<void>;
+		removeSearchFolder: (path: string) => Promise<void>;
 		requestCalendarAccess: () => Promise<void>;
 		getCalendarAuthorizationStatus: () => CalendarAuthorizationStatus;
 		getEvents: (calendarIds?: string[]) => Promise<INativeEvent[]>;

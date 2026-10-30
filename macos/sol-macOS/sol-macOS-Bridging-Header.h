@@ -15,6 +15,5 @@
 
 // File search indexing - Swift classes
 @class FileSearchIndexObjC;
-@class FileSearchIndexer;
 
 AXError _AXUIElementGetWindow(AXUIElementRef element, uint32_t *identifier);
