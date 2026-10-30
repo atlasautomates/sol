@@ -31,6 +31,7 @@ final class FileIndex {
     if let readDB {
       sqlite3_exec(readDB, "PRAGMA query_only=ON;", nil, nil, nil)
     }
+    searchFolders = Array(recordedFolders())
   }
 
   static func applicationDatabaseURL() -> URL {
@@ -49,7 +50,9 @@ final class FileIndex {
         completion()
         return
       }
+      self.readLock.lock()
       self.searchFolders = folders
+      self.readLock.unlock()
       self.startWatching(folders)
       let recorded = self.recordedFolders()
       if !self.hasRows() {
@@ -82,42 +85,23 @@ final class FileIndex {
     defer { readLock.unlock() }
     guard let db = readDB else { return [] }
 
-    let sql = "SELECT path, name, is_folder FROM files WHERE name LIKE ? ESCAPE '\\'"
-    var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-      return []
-    }
-    defer { sqlite3_finalize(statement) }
-
-    let pattern = "%" + escapeLike(trimmed) + "%"
-    sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
-
-    var scored: [(file: IndexedFile, score: CGFloat)] = []
-    while sqlite3_step(statement) == SQLITE_ROW {
-      guard let cPath = sqlite3_column_text(statement, 0),
-            let cName = sqlite3_column_text(statement, 1) else {
-        continue
-      }
-      let path = String(cString: cPath)
-      let name = String(cString: cName)
-      guard name.range(of: trimmed, options: .caseInsensitive) != nil else {
-        continue
-      }
-      let isFolder = sqlite3_column_int(statement, 2) != 0
-      let score = (name as NSString).scoreAgainst(trimmed)
-      scored.append((
-        IndexedFile(path: path, name: name, isFolder: isFolder),
-        score
-      ))
+    let byName = ranked(nameMatches(db: db, query: trimmed))
+    // Name matches fill the cap first. A path hit must not take a slot from
+    // a name hit, even when that folder's fuzzy score is higher. A file that
+    // matches both stays in this tier once.
+    if byName.count >= 100 {
+      return byName.prefix(100).map(\.file)
     }
 
-    scored.sort { lhs, rhs in
-      if lhs.score != rhs.score {
-        return lhs.score > rhs.score
-      }
-      return lhs.file.name < rhs.file.name
-    }
-    return scored.prefix(100).map(\.file)
+    let namePaths = Set(byName.map(\.file.path))
+    let byPath = ranked(pathMatches(
+      db: db,
+      query: trimmed,
+      roots: searchFolders,
+      excluding: namePaths
+    ))
+    let room = 100 - byName.count
+    return (byName + Array(byPath.prefix(room))).map(\.file)
   }
 
   func reindex(completion: @escaping () -> Void) {
@@ -142,10 +126,13 @@ final class FileIndex {
         completion()
         return
       }
+      self.readLock.lock()
       self.searchFolders.removeAll { $0 == folder }
+      let remaining = self.searchFolders
+      self.readLock.unlock()
       self.deleteTree(folder)
       self.forgetFolder(folder)
-      self.startWatching(self.searchFolders)
+      self.startWatching(remaining)
       completion()
     }
   }
@@ -487,6 +474,150 @@ final class FileIndex {
       }
     }
     return result
+  }
+
+  private func nameMatches(db: OpaquePointer, query: String) -> [(file: IndexedFile, score: CGFloat)] {
+    let sql = "SELECT path, name, is_folder FROM files WHERE name LIKE ? ESCAPE '\\'"
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return []
+    }
+    defer { sqlite3_finalize(statement) }
+
+    let pattern = "%" + escapeLike(query) + "%"
+    sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
+
+    var matches: [(file: IndexedFile, score: CGFloat)] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      guard let file = readIndexedFile(statement) else { continue }
+      guard file.name.range(of: query, options: .caseInsensitive) != nil else { continue }
+      let score = (file.name as NSString).scoreAgainst(query)
+      matches.append((file, score))
+    }
+    return matches
+  }
+
+  // A path match is a case-insensitive contains on a folder name strictly
+  // inside the search folder. The search folder's own last component does
+  // not count: a file directly inside Documents does not match "documents".
+  // The score is that folder's scoreAgainst the query. When several ancestor
+  // folders contain the query, the highest score wins, so a short folder
+  // outranks a long one that merely contains it.
+  private func pathMatches(
+    db: OpaquePointer,
+    query: String,
+    roots: [String],
+    excluding namePaths: Set<String>
+  ) -> [(file: IndexedFile, score: CGFloat)] {
+    let folders = matchingFolders(db: db, query: query, roots: roots)
+    if folders.isEmpty {
+      return []
+    }
+
+    var best: [String: (file: IndexedFile, score: CGFloat)] = [:]
+    for folder in folders {
+      for file in files(under: folder.path, db: db) {
+        if namePaths.contains(file.path) { continue }
+        if let current = best[file.path], current.score >= folder.score { continue }
+        best[file.path] = (file, folder.score)
+      }
+    }
+    return Array(best.values)
+  }
+
+  private struct ScoredFolder {
+    let path: String
+    let score: CGFloat
+  }
+
+  private func matchingFolders(db: OpaquePointer, query: String, roots: [String]) -> [ScoredFolder] {
+    if roots.isEmpty { return [] }
+    let sql = "SELECT path, name FROM files WHERE is_folder = 1 AND name LIKE ? ESCAPE '\\'"
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return []
+    }
+    defer { sqlite3_finalize(statement) }
+
+    let pattern = "%" + escapeLike(query) + "%"
+    sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
+
+    var folders: [ScoredFolder] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      guard let cPath = sqlite3_column_text(statement, 0),
+            let cName = sqlite3_column_text(statement, 1) else {
+        continue
+      }
+      let path = String(cString: cPath)
+      let name = String(cString: cName)
+      guard name.range(of: query, options: .caseInsensitive) != nil else { continue }
+      // The innermost search folder is the boundary. Its own name is not a
+      // path match, and a wider search folder that contains it is not either.
+      guard isStrictlyInsideSearchRoot(path, roots: roots) else { continue }
+      folders.append(ScoredFolder(
+        path: path,
+        score: (name as NSString).scoreAgainst(query)
+      ))
+    }
+    return folders
+  }
+
+  private func files(under folder: String, db: OpaquePointer) -> [IndexedFile] {
+    let sql = "SELECT path, name, is_folder FROM files WHERE path LIKE ? ESCAPE '\\'"
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return []
+    }
+    defer { sqlite3_finalize(statement) }
+
+    let pattern = escapeLike(folder) + "/%"
+    sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
+
+    var files: [IndexedFile] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      if let file = readIndexedFile(statement) {
+        files.append(file)
+      }
+    }
+    return files
+  }
+
+  private func isStrictlyInsideSearchRoot(_ path: String, roots: [String]) -> Bool {
+    guard let root = innermostSearchRoot(containing: path, roots: roots) else { return false }
+    return path.hasPrefix(root + "/")
+  }
+
+  private func innermostSearchRoot(containing path: String, roots: [String]) -> String? {
+    var best: String?
+    for root in roots where !root.isEmpty {
+      let contains = path == root || path.hasPrefix(root + "/")
+      guard contains else { continue }
+      if let current = best, root.count <= current.count { continue }
+      best = root
+    }
+    return best
+  }
+
+  private func readIndexedFile(_ statement: OpaquePointer?) -> IndexedFile? {
+    guard let statement,
+          let cPath = sqlite3_column_text(statement, 0),
+          let cName = sqlite3_column_text(statement, 1) else {
+      return nil
+    }
+    return IndexedFile(
+      path: String(cString: cPath),
+      name: String(cString: cName),
+      isFolder: sqlite3_column_int(statement, 2) != 0
+    )
+  }
+
+  private func ranked(_ matches: [(file: IndexedFile, score: CGFloat)]) -> [(file: IndexedFile, score: CGFloat)] {
+    matches.sorted { lhs, rhs in
+      if lhs.score != rhs.score {
+        return lhs.score > rhs.score
+      }
+      return lhs.file.name < rhs.file.name
+    }
   }
 
   private func escapeLike(_ value: String) -> String {
