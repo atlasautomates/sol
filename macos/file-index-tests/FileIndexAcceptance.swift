@@ -20,6 +20,12 @@ import Foundation
 // - removeSearchFolder drops that folder's files.
 // - A directory named node_modules, and a directory macOS treats as a package,
 //   is not stored, and neither are its contents.
+// - A year, an English month name, a calendar date yyyy-MM-dd, or a 24-hour
+//   HH:mm matches the file's creation time or its modification time. Those
+//   four forms are the file's local civil time. yesterday does not match on
+//   the clock alone.
+// - A date match ranks below every path match and every name match.
+// - A file that matches its name and its date appears once, as a name match.
 
 private var failures: [String] = []
 
@@ -56,6 +62,29 @@ private func write(_ root: URL, _ relative: String, _ contents: String = "x") {
 
 private func index(at root: URL) -> FileIndex {
   FileIndex(databaseURL: root.appendingPathComponent("filesearch.db"))
+}
+
+private func localDate(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int) -> Date {
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = .current
+  return calendar.date(from: DateComponents(
+    year: year, month: month, day: day, hour: hour, minute: minute
+  ))!
+}
+
+private func calendarDate(_ date: Date) -> String {
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = .current
+  let parts = calendar.dateComponents([.year, .month, .day], from: date)
+  return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
+}
+
+private func setClocks(_ root: URL, _ relative: String, created: Date, modified: Date) {
+  let url = root.appendingPathComponent(relative)
+  try! FileManager.default.setAttributes([
+    .creationDate: created,
+    .modificationDate: modified,
+  ], ofItemAtPath: url.path)
 }
 
 private func testNameContainsIsCaseInsensitive() {
@@ -275,6 +304,78 @@ private func testPopulatedDatabaseDoesNotWalkAgain() {
   check(store.search(query: "first").map(\.name).contains("first.txt"), "files already stored are still searchable")
 }
 
+private func testClocksMatchYearMonthDateAndMinute() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("papers", isDirectory: true)
+  write(folder, "alpha.txt")
+  write(folder, "beta.txt")
+  setClocks(
+    folder, "alpha.txt",
+    created: localDate(2026, 10, 28, 9, 15),
+    modified: localDate(2010, 1, 1, 8, 0)
+  )
+  setClocks(
+    folder, "beta.txt",
+    created: localDate(2001, 1, 1, 8, 0),
+    modified: localDate(2011, 4, 4, 14, 5)
+  )
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+
+  check(store.search(query: "2026").map(\.name).contains("alpha.txt"), "a creation year matches")
+  check(store.search(query: "October").map(\.name).contains("alpha.txt"), "an English month name matches")
+  check(store.search(query: "october").map(\.name).contains("alpha.txt"), "a month name is case insensitive")
+  check(store.search(query: "2026-10-28").map(\.name).contains("alpha.txt"), "a calendar date matches")
+  check(store.search(query: "2010").map(\.name).contains("alpha.txt"), "a modification year matches")
+  check(store.search(query: "14:05").map(\.name).contains("beta.txt"), "an hour and minute matches the modification time")
+  check(store.search(query: "April").map(\.name).contains("beta.txt"), "a modification month matches")
+  check(store.search(query: "2001").map(\.name).contains("beta.txt"), "a creation year matches when the modification year differs")
+  check(!store.search(query: "14:05").map(\.name).contains("alpha.txt"), "a different minute does not match")
+}
+
+private func testYesterdayDoesNotMatchTheClock() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("papers", isDirectory: true)
+  write(folder, "notes.txt")
+  let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
+  setClocks(folder, "notes.txt", created: yesterday, modified: yesterday)
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  check(store.search(query: "yesterday").isEmpty, "yesterday does not match on the clock alone")
+  check(
+    store.search(query: calendarDate(yesterday)).map(\.name).contains("notes.txt"),
+    "the same file still matches its calendar date"
+  )
+}
+
+private func testDateMatchRanksBelowPathAndName() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("library", isDirectory: true)
+  write(folder, "2026.txt")
+  write(folder, "Year2026/notes.txt")
+  write(folder, "photo.txt")
+  let inTwentyTwentySix = localDate(2026, 6, 2, 12, 0)
+  let longAgo = localDate(2010, 1, 1, 8, 0)
+  setClocks(folder, "2026.txt", created: inTwentyTwentySix, modified: inTwentyTwentySix)
+  setClocks(folder, "Year2026/notes.txt", created: longAgo, modified: longAgo)
+  setClocks(folder, "photo.txt", created: inTwentyTwentySix, modified: inTwentyTwentySix)
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  let names = store.search(query: "2026").map(\.name)
+  check(names.filter { $0 == "2026.txt" }.count == 1, "a file that matches its name and its date appears once")
+  guard let nameIndex = names.firstIndex(of: "2026.txt"),
+        let pathIndex = names.firstIndex(of: "notes.txt"),
+        let dateIndex = names.firstIndex(of: "photo.txt") else {
+    check(false, "name, path, and date matches all appear, got \(names)")
+    return
+  }
+  check(nameIndex < pathIndex, "a name match ranks above a path match, got \(names)")
+  check(pathIndex < dateIndex, "a date match ranks below a path match, got \(names)")
+}
+
 let tests: [(String, () -> Void)] = [
   ("name contains is case insensitive", testNameContainsIsCaseInsensitive),
   ("higher fuzzy score ranks first", testHigherFuzzyScoreRanksFirst),
@@ -291,6 +392,9 @@ let tests: [(String, () -> Void)] = [
   ("path match ranks below a name match", testPathMatchRanksBelowNameMatch),
   ("search folder name does not match", testSearchFolderNameDoesNotMatch),
   ("path tier uses fuzzy score", testPathTierUsesFuzzyScore),
+  ("clocks match a year, month, date, and minute", testClocksMatchYearMonthDateAndMinute),
+  ("yesterday does not match the clock", testYesterdayDoesNotMatchTheClock),
+  ("a date match ranks below a path match and a name match", testDateMatchRanksBelowPathAndName),
 ]
 
 @main
