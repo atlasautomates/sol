@@ -85,23 +85,31 @@ final class FileIndex {
     defer { readLock.unlock() }
     guard let db = readDB else { return [] }
 
-    let byName = ranked(nameMatches(db: db, query: trimmed))
-    // Name matches fill the cap first. A path hit must not take a slot from
-    // a name hit, even when that folder's fuzzy score is higher. A file that
-    // matches both stays in this tier once.
-    if byName.count >= 100 {
-      return byName.prefix(100).map(\.file)
+    var results: [(file: IndexedFile, score: CGFloat)] = []
+    // Name matches fill the cap first. A later tier must not take a slot
+    // from an earlier one, even when its fuzzy score is higher. A file that
+    // matches more than one tier stays in the best tier once.
+    results.append(contentsOf: ranked(nameMatches(db: db, query: trimmed)).prefix(100))
+    if results.count >= 100 {
+      return results.map(\.file)
     }
 
-    let namePaths = Set(byName.map(\.file.path))
+    let namePaths = Set(results.map(\.file.path))
     let byPath = ranked(pathMatches(
       db: db,
       query: trimmed,
       roots: searchFolders,
       excluding: namePaths
     ))
-    let room = 100 - byName.count
-    return (byName + Array(byPath.prefix(room))).map(\.file)
+    results.append(contentsOf: byPath.prefix(100 - results.count))
+    if results.count >= 100 {
+      return results.map(\.file)
+    }
+
+    let taken = Set(results.map(\.file.path))
+    let byClock = ranked(clockMatches(db: db, query: trimmed, excluding: taken))
+    results.append(contentsOf: byClock.prefix(100 - results.count))
+    return results.map(\.file)
   }
 
   func reindex(completion: @escaping () -> Void) {
@@ -167,7 +175,10 @@ final class FileIndex {
         name TEXT NOT NULL,
         is_folder INTEGER NOT NULL,
         parent_path TEXT,
-        indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at REAL,
+        modified_at REAL,
+        clock_text TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_name ON files(name);
       CREATE TABLE IF NOT EXISTS search_folders (
@@ -175,6 +186,11 @@ final class FileIndex {
       );
     """
     exec(writeDB, sql)
+    // An index created before clocks existed keeps its rows. New columns
+    // stay null until a later walk fills them.
+    exec(writeDB, "ALTER TABLE files ADD COLUMN created_at REAL;")
+    exec(writeDB, "ALTER TABLE files ADD COLUMN modified_at REAL;")
+    exec(writeDB, "ALTER TABLE files ADD COLUMN clock_text TEXT;")
   }
 
   private func exec(_ db: OpaquePointer?, _ sql: String) {
@@ -252,9 +268,8 @@ final class FileIndex {
 
   private func walk(_ root: String) {
     guard let db = writeDB else { return }
-    let sql = "INSERT OR REPLACE INTO files (path, name, is_folder, parent_path) VALUES (?, ?, ?, ?);"
     var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+    guard sqlite3_prepare_v2(db, insertSQL, -1, &statement, nil) == SQLITE_OK else {
       return
     }
     defer { sqlite3_finalize(statement) }
@@ -272,13 +287,13 @@ final class FileIndex {
           continue
         }
         autoreleasepool {
-          sqlite3_reset(statement)
-          sqlite3_clear_bindings(statement)
-          sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
-          sqlite3_bind_text(statement, 2, name, -1, SQLITE_TRANSIENT)
-          sqlite3_bind_int(statement, 3, info.isDirectory ? 1 : 0)
-          sqlite3_bind_text(statement, 4, directory, -1, SQLITE_TRANSIENT)
-          sqlite3_step(statement)
+          insertFile(
+            path: path,
+            name: name,
+            isFolder: info.isDirectory,
+            parent: directory,
+            statement: statement
+          )
         }
         if info.isDirectory {
           pending.append(path)
@@ -357,19 +372,40 @@ final class FileIndex {
     }
   }
 
+  private let insertSQL = """
+    INSERT OR REPLACE INTO files (
+      path, name, is_folder, parent_path, created_at, modified_at, clock_text
+    ) VALUES (?, ?, ?, ?, ?, ?, ?);
+    """
+
   private func upsert(path: String, name: String, isFolder: Bool, parent: String) {
     guard let db = writeDB else { return }
-    let sql = "INSERT OR REPLACE INTO files (path, name, is_folder, parent_path) VALUES (?, ?, ?, ?);"
     var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+    guard sqlite3_prepare_v2(db, insertSQL, -1, &statement, nil) == SQLITE_OK else {
       return
     }
+    insertFile(path: path, name: name, isFolder: isFolder, parent: parent, statement: statement)
+    sqlite3_finalize(statement)
+  }
+
+  private func insertFile(
+    path: String,
+    name: String,
+    isFolder: Bool,
+    parent: String,
+    statement: OpaquePointer?
+  ) {
+    let clock = clocks(at: path)
+    sqlite3_reset(statement)
+    sqlite3_clear_bindings(statement)
     sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
     sqlite3_bind_text(statement, 2, name, -1, SQLITE_TRANSIENT)
     sqlite3_bind_int(statement, 3, isFolder ? 1 : 0)
     sqlite3_bind_text(statement, 4, parent, -1, SQLITE_TRANSIENT)
+    bindOptionalDouble(statement, 5, clock.created)
+    bindOptionalDouble(statement, 6, clock.modified)
+    sqlite3_bind_text(statement, 7, clock.text, -1, SQLITE_TRANSIENT)
     sqlite3_step(statement)
-    sqlite3_finalize(statement)
   }
 
   private func startWatching(_ paths: [String]) {
@@ -609,6 +645,92 @@ final class FileIndex {
       name: String(cString: cName),
       isFolder: sqlite3_column_int(statement, 2) != 0
     )
+  }
+
+  // clock_text is local civil time for both clocks: "yyyy", English "MMMM",
+  // "yyyy-MM-dd", and 24-hour "HH:mm". Relative words are absent on purpose,
+  // so a query of yesterday cannot match a file just because of when it was
+  // written. The English month is fixed so a non-English locale still
+  // matches the form the file search promises.
+  private func clockMatches(
+    db: OpaquePointer,
+    query: String,
+    excluding taken: Set<String>
+  ) -> [(file: IndexedFile, score: CGFloat)] {
+    let sql = """
+      SELECT path, name, is_folder, clock_text FROM files
+      WHERE clock_text LIKE ? ESCAPE '\\'
+      """
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return []
+    }
+    defer { sqlite3_finalize(statement) }
+
+    let pattern = "%" + escapeLike(query) + "%"
+    sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
+
+    var matches: [(file: IndexedFile, score: CGFloat)] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      guard let file = readIndexedFile(statement),
+            let cText = sqlite3_column_text(statement, 3) else {
+        continue
+      }
+      if taken.contains(file.path) { continue }
+      let text = String(cString: cText)
+      guard text.range(of: query, options: .caseInsensitive) != nil else { continue }
+      matches.append((file, (text as NSString).scoreAgainst(query)))
+    }
+    return matches
+  }
+
+  private struct ClockRecord {
+    var created: Double?
+    var modified: Double?
+    var text: String
+  }
+
+  private func clocks(at path: String) -> ClockRecord {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+    let created = attrs?[.creationDate] as? Date
+    let modified = attrs?[.modificationDate] as? Date
+    return ClockRecord(
+      created: created?.timeIntervalSince1970,
+      modified: modified?.timeIntervalSince1970,
+      text: clockText(created: created, modified: modified)
+    )
+  }
+
+  private func clockText(created: Date?, modified: Date?) -> String {
+    [created, modified].compactMap { $0 }.map(civilClock).joined(separator: " ")
+  }
+
+  private let englishMonths = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ]
+
+  private func civilClock(_ date: Date) -> String {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = .current
+    let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let year = parts.year ?? 0
+    let month = parts.month ?? 1
+    let day = parts.day ?? 1
+    let hour = parts.hour ?? 0
+    let minute = parts.minute ?? 0
+    let monthName = englishMonths[max(0, min(month - 1, englishMonths.count - 1))]
+    let calendarDate = String(format: "%04d-%02d-%02d", year, month, day)
+    let hourMinute = String(format: "%02d:%02d", hour, minute)
+    return "\(year) \(monthName) \(calendarDate) \(hourMinute)"
+  }
+
+  private func bindOptionalDouble(_ statement: OpaquePointer?, _ index: Int32, _ value: Double?) {
+    if let value {
+      sqlite3_bind_double(statement, index, value)
+    } else {
+      sqlite3_bind_null(statement, index)
+    }
   }
 
   private func ranked(_ matches: [(file: IndexedFile, score: CGFloat)]) -> [(file: IndexedFile, score: CGFloat)] {
