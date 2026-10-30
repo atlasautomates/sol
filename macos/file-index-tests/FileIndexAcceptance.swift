@@ -140,6 +140,20 @@ private func testSkipsNodeModules() {
   check(store.search(query: "readme").map(\.name).contains("readme.txt"), "a sibling of node_modules is kept")
 }
 
+private func testSkipsHiddenNames() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("proj", isDirectory: true)
+  write(folder, "visible.txt")
+  write(folder, ".env")
+  write(folder, ".git/objects/secret-object")
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  check(store.search(query: ".env").isEmpty, "a hidden file is absent")
+  check(store.search(query: "secret-object").isEmpty, "files inside a hidden directory are absent")
+  check(store.search(query: "visible").map(\.name).contains("visible.txt"), "a visible sibling is kept")
+}
+
 private func testSkipsPackage() {
   let root = makeRoot()
   defer { try? FileManager.default.removeItem(at: root) }
@@ -211,6 +225,7 @@ let tests: [(String, () -> Void)] = [
   ("search returns at most one hundred", testSearchReturnsAtMostOneHundred),
   ("search returns while a walk is running", testSearchReturnsWhileWalkIsRunning),
   ("skips node_modules", testSkipsNodeModules),
+  ("skips hidden names", testSkipsHiddenNames),
   ("skips a package", testSkipsPackage),
   ("reindex clears then walks", testReindexClearsThenWalks),
   ("remove folder drops its files", testRemoveFolderDropsItsFiles),
