@@ -1,5 +1,6 @@
 import Foundation
 import CoreServices
+import ImageIO
 import SQLite3
 
 struct IndexedFile {
@@ -178,7 +179,8 @@ final class FileIndex {
         indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         created_at REAL,
         modified_at REAL,
-        clock_text TEXT
+        clock_text TEXT,
+        place_name TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_name ON files(name);
       CREATE TABLE IF NOT EXISTS search_folders (
@@ -191,6 +193,7 @@ final class FileIndex {
     exec(writeDB, "ALTER TABLE files ADD COLUMN created_at REAL;")
     exec(writeDB, "ALTER TABLE files ADD COLUMN modified_at REAL;")
     exec(writeDB, "ALTER TABLE files ADD COLUMN clock_text TEXT;")
+    exec(writeDB, "ALTER TABLE files ADD COLUMN place_name TEXT;")
   }
 
   private func exec(_ db: OpaquePointer?, _ sql: String) {
@@ -374,8 +377,8 @@ final class FileIndex {
 
   private let insertSQL = """
     INSERT OR REPLACE INTO files (
-      path, name, is_folder, parent_path, created_at, modified_at, clock_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?);
+      path, name, is_folder, parent_path, created_at, modified_at, clock_text, place_name
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
     """
 
   private func upsert(path: String, name: String, isFolder: Bool, parent: String) {
@@ -396,6 +399,7 @@ final class FileIndex {
     statement: OpaquePointer?
   ) {
     let clock = clocks(at: path)
+    let place = placeName(path: path, isFolder: isFolder)
     sqlite3_reset(statement)
     sqlite3_clear_bindings(statement)
     sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
@@ -405,6 +409,7 @@ final class FileIndex {
     bindOptionalDouble(statement, 5, clock.created)
     bindOptionalDouble(statement, 6, clock.modified)
     sqlite3_bind_text(statement, 7, clock.text, -1, SQLITE_TRANSIENT)
+    sqlite3_bind_text(statement, 8, place, -1, SQLITE_TRANSIENT)
     sqlite3_step(statement)
   }
 
@@ -658,8 +663,8 @@ final class FileIndex {
     excluding taken: Set<String>
   ) -> [(file: IndexedFile, score: CGFloat)] {
     let sql = """
-      SELECT path, name, is_folder, clock_text FROM files
-      WHERE clock_text LIKE ? ESCAPE '\\'
+      SELECT path, name, is_folder, clock_text, place_name FROM files
+      WHERE clock_text LIKE ? ESCAPE '\\' OR place_name LIKE ? ESCAPE '\\'
       """
     var statement: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -669,19 +674,214 @@ final class FileIndex {
 
     let pattern = "%" + escapeLike(query) + "%"
     sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
+    sqlite3_bind_text(statement, 2, pattern, -1, SQLITE_TRANSIENT)
 
     var matches: [(file: IndexedFile, score: CGFloat)] = []
     while sqlite3_step(statement) == SQLITE_ROW {
-      guard let file = readIndexedFile(statement),
-            let cText = sqlite3_column_text(statement, 3) else {
-        continue
-      }
+      guard let file = readIndexedFile(statement) else { continue }
       if taken.contains(file.path) { continue }
-      let text = String(cString: cText)
-      guard text.range(of: query, options: .caseInsensitive) != nil else { continue }
-      matches.append((file, (text as NSString).scoreAgainst(query)))
+      var score: CGFloat = 0
+      var matched = false
+      if let cText = sqlite3_column_text(statement, 3) {
+        let text = String(cString: cText)
+        if text.range(of: query, options: .caseInsensitive) != nil {
+          matched = true
+          score = max(score, bestTokenScore(text, query: query))
+        }
+      }
+      if let cPlace = sqlite3_column_text(statement, 4) {
+        let place = String(cString: cPlace)
+        if place.range(of: query, options: .caseInsensitive) != nil {
+          matched = true
+          score = max(score, bestTokenScore(place, query: query))
+        }
+      }
+      if matched {
+        matches.append((file, score))
+      }
     }
     return matches
+  }
+
+  // The clock string carries two clocks, so the month is not the whole
+  // string. Score each token and keep the best, or "May" loses to a longer
+  // place that merely starts with those letters.
+  private func bestTokenScore(_ text: String, query: String) -> CGFloat {
+    var best: CGFloat = (text as NSString).scoreAgainst(query)
+    for token in text.split(whereSeparator: { $0.isWhitespace }) {
+      best = max(best, (String(token) as NSString).scoreAgainst(query))
+    }
+    return best
+  }
+
+  // A place name is read only for a photo, a video, an audio file, or a map
+  // link, and only when the file already carries one. Coordinates are not a
+  // place: GPS and ISO 6709 strings are ignored, and nothing is geocoded.
+  private func placeName(path: String, isFolder: Bool) -> String {
+    if isFolder { return "" }
+    let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+    let raw: String
+    switch ext {
+    case "jpg", "jpeg", "png", "gif", "tif", "tiff", "heic", "heif", "webp", "bmp":
+      raw = imagePlaceName(path)
+    case "mov", "mp4", "m4v", "avi", "mkv", "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "caf":
+      raw = mediaPlaceName(path)
+    case "webloc", "inetloc":
+      raw = mapLinkPlaceName(path)
+    default:
+      return ""
+    }
+    if raw.isEmpty || isCoordinate(raw) { return "" }
+    return raw
+  }
+
+  private func imagePlaceName(_ path: String) -> String {
+    let url = URL(fileURLWithPath: path) as CFURL
+    guard let source = CGImageSourceCreateWithURL(url, nil),
+          let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let iptc = props[kCGImagePropertyIPTCDictionary] as? [CFString: Any] else {
+      return ""
+    }
+    let keys = [
+      kCGImagePropertyIPTCCity,
+      kCGImagePropertyIPTCProvinceState,
+      kCGImagePropertyIPTCCountryPrimaryLocationName,
+    ]
+    return keys.compactMap { key in
+      (iptc[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }.filter { !$0.isEmpty && !isCoordinate($0) }.joined(separator: " ")
+  }
+
+  private func mediaPlaceName(_ path: String) -> String {
+    guard let handle = FileHandle(forReadingAtPath: path) else { return "" }
+    defer { try? handle.close() }
+    let edge = 4 * 1024 * 1024
+    let prefix = handle.readData(ofLength: edge)
+    let end = handle.seekToEndOfFile()
+    let data: Data
+    if end > UInt64(edge) {
+      let offset = end > UInt64(edge * 2) ? end - UInt64(edge) : UInt64(edge)
+      handle.seek(toFileOffset: offset)
+      data = prefix + handle.readDataToEndOfFile()
+    } else {
+      data = prefix
+    }
+    return quickTimePlaceName(data)
+  }
+
+  private func mapLinkPlaceName(_ path: String) -> String {
+    let url = URL(fileURLWithPath: path)
+    guard let dict = NSDictionary(contentsOf: url),
+          let raw = dict["URL"] as? String,
+          let components = URLComponents(string: raw) else {
+      return ""
+    }
+    let named = ["q", "query", "address", "near"]
+    if let items = components.queryItems {
+      for name in named {
+        guard let value = items.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.value else {
+          continue
+        }
+        let place = value.replacingOccurrences(of: "+", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !place.isEmpty && !isCoordinate(place) { return place }
+      }
+    }
+    let parts = components.path.split(separator: "/").map(String.init)
+    if let index = parts.firstIndex(of: "place"), index + 1 < parts.count {
+      let place = (parts[index + 1].removingPercentEncoding ?? parts[index + 1])
+        .replacingOccurrences(of: "+", with: " ")
+      if !place.isEmpty && !isCoordinate(place) { return place }
+    }
+    return ""
+  }
+
+  private func isCoordinate(_ value: String) -> Bool {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let patterns = [
+      #"^[+-]?\d+(\.\d+)?\s*,\s*[+-]?\d+(\.\d+)?$"#,
+      #"^[+-]\d+(\.\d+)?[+-]\d+(\.\d+)?"#,
+    ]
+    return patterns.contains { trimmed.range(of: $0, options: .regularExpression) != nil }
+  }
+
+  private func quickTimePlaceName(_ data: Data) -> String {
+    let bytes = [UInt8](data)
+    let marker = Array("keys".utf8)
+    var index = 4
+    while index + 4 <= bytes.count {
+      if bytes[index] == marker[0], bytes[index + 1] == marker[1],
+         bytes[index + 2] == marker[2], bytes[index + 3] == marker[3],
+         let place = placeName(inKeysBox: bytes, sizeAt: index - 4) {
+        return place
+      }
+      index += 1
+    }
+    return ""
+  }
+
+  private func placeName(inKeysBox bytes: [UInt8], sizeAt: Int) -> String? {
+    guard let size = u32(bytes, sizeAt), size >= 24, size < 1_000_000, sizeAt + size <= bytes.count else {
+      return nil
+    }
+    let header = sizeAt + 8
+    guard let count = u32(bytes, header + 4), count > 0, count < 10_000 else { return nil }
+    var cursor = header + 8
+    let end = sizeAt + size
+    let wanted = Array("com.apple.quicktime.location.name".utf8)
+    var placeIndex: Int?
+    for keyIndex in 1...count {
+      guard let entrySize = u32(bytes, cursor), entrySize >= 8, cursor + entrySize <= end else { return nil }
+      let value = Array(bytes[(cursor + 8)..<(cursor + entrySize)])
+      if value == wanted { placeIndex = keyIndex }
+      cursor += entrySize
+    }
+    guard let placeIndex else { return nil }
+    guard let raw = ilstValue(bytes, keyIndex: placeIndex) else { return nil }
+    if raw.isEmpty || isCoordinate(raw) { return nil }
+    return raw
+  }
+
+  private func ilstValue(_ bytes: [UInt8], keyIndex: Int) -> String? {
+    let marker = Array("ilst".utf8)
+    var index = 4
+    while index + 4 <= bytes.count {
+      let isIlst = bytes[index] == marker[0] && bytes[index + 1] == marker[1]
+        && bytes[index + 2] == marker[2] && bytes[index + 3] == marker[3]
+      if isIlst, let size = u32(bytes, index - 4), size >= 8, index - 4 + size <= bytes.count {
+        var itemAt = index + 4
+        let ilstEnd = index - 4 + size
+        while itemAt + 8 <= ilstEnd {
+          guard let itemSize = u32(bytes, itemAt), itemSize >= 8, itemAt + itemSize <= ilstEnd else { break }
+          if u32(bytes, itemAt + 4) == keyIndex, let value = dataAtomString(bytes, itemAt: itemAt, itemEnd: itemAt + itemSize) {
+            return value
+          }
+          itemAt += itemSize
+        }
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private func dataAtomString(_ bytes: [UInt8], itemAt: Int, itemEnd: Int) -> String? {
+    let marker = Array("data".utf8)
+    var child = itemAt + 8
+    while child + 16 <= itemEnd {
+      guard let childSize = u32(bytes, child), childSize >= 16, child + childSize <= itemEnd else { break }
+      let type = Array(bytes[(child + 4)..<(child + 8)])
+      if type == marker {
+        let payload = bytes[(child + 16)..<(child + childSize)]
+        return String(bytes: payload, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+      child += childSize
+    }
+    return nil
+  }
+
+  private func u32(_ bytes: [UInt8], _ offset: Int) -> Int? {
+    guard offset >= 0, offset + 4 <= bytes.count else { return nil }
+    return (Int(bytes[offset]) << 24) | (Int(bytes[offset + 1]) << 16)
+      | (Int(bytes[offset + 2]) << 8) | Int(bytes[offset + 3])
   }
 
   private struct ClockRecord {

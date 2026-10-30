@@ -1,4 +1,7 @@
 import Foundation
+import ImageIO
+import CoreGraphics
+import UniformTypeIdentifiers
 
 // Lead-authored acceptance tests for ticket 01. The implementer must not edit
 // this file. The module under test is FileIndex. Construct it with a database
@@ -26,6 +29,11 @@ import Foundation
 //   the clock alone.
 // - A date match ranks below every path match and every name match.
 // - A file that matches its name and its date appears once, as a name match.
+// - A photo's IPTC city, a video or audio file's QuickTime location.name,
+//   and the place named by a map link all match. An ordinary file, a file
+//   with no place name, and a coordinate string do not.
+// - A place match sits in the same tier as a date match, below path and
+//   name. A file that also matches a better tier appears once, in that tier.
 
 private var failures: [String] = []
 
@@ -77,6 +85,84 @@ private func calendarDate(_ date: Date) -> String {
   calendar.timeZone = .current
   let parts = calendar.dateComponents([.year, .month, .day], from: date)
   return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
+}
+
+private func writePhoto(_ root: URL, _ relative: String, city: String?, latitude: Double? = nil) {
+  let url = root.appendingPathComponent(relative)
+  try! FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+  let space = CGColorSpaceCreateDeviceRGB()
+  let context = CGContext(
+    data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+    space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+  )!
+  let image = context.makeImage()!
+  let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+  var props: [CFString: Any] = [:]
+  if let city {
+    props[kCGImagePropertyIPTCDictionary] = [kCGImagePropertyIPTCCity: city]
+  }
+  if let latitude {
+    props[kCGImagePropertyGPSDictionary] = [
+      kCGImagePropertyGPSLatitude: latitude,
+      kCGImagePropertyGPSLongitude: 2.3522,
+    ]
+  }
+  CGImageDestinationAddImage(dest, image, props as CFDictionary)
+  if !CGImageDestinationFinalize(dest) {
+    check(false, "could not write \(relative)")
+  }
+}
+
+private func placeBoxes(_ name: String) -> Data {
+  func be32(_ n: Int) -> Data {
+    var v = UInt32(n).bigEndian
+    return Data(bytes: &v, count: 4)
+  }
+  let key = Data("com.apple.quicktime.location.name".utf8)
+  var entry = be32(8 + key.count)
+  entry.append(contentsOf: "mdta".utf8)
+  entry.append(key)
+  var keysBody = be32(0)
+  keysBody.append(be32(1))
+  keysBody.append(entry)
+  var keys = be32(8 + keysBody.count)
+  keys.append(contentsOf: "keys".utf8)
+  keys.append(keysBody)
+  let value = Data(name.utf8)
+  var dataAtom = be32(16 + value.count)
+  dataAtom.append(contentsOf: "data".utf8)
+  dataAtom.append(be32(1))
+  dataAtom.append(be32(0))
+  dataAtom.append(value)
+  var item = be32(8 + dataAtom.count)
+  item.append(be32(1))
+  item.append(dataAtom)
+  var ilst = be32(8 + item.count)
+  ilst.append(contentsOf: "ilst".utf8)
+  ilst.append(item)
+  keys.append(ilst)
+  return keys
+}
+
+private func writeMedia(_ root: URL, _ relative: String, place: String?) {
+  let url = root.appendingPathComponent(relative)
+  try! FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+  var data = Data("sol-media".utf8)
+  if let place {
+    data.append(placeBoxes(place))
+  }
+  try! data.write(to: url)
+}
+
+private func writeMapLink(_ root: URL, _ relative: String, urlString: String) {
+  let url = root.appendingPathComponent(relative)
+  try! FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+  let plist = """
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0"><dict><key>URL</key><string>\(urlString)</string></dict></plist>
+  """
+  try! plist.write(to: url, atomically: true, encoding: .utf8)
 }
 
 private func setClocks(_ root: URL, _ relative: String, created: Date, modified: Date) {
@@ -378,6 +464,108 @@ private func testDateMatchRanksBelowPathAndName() {
   check(pathIndex < dateIndex, "a date match ranks below a path match, got \(names)")
 }
 
+private func testPlaceNamesForMediaAndMapLinks() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("trips", isDirectory: true)
+  writePhoto(folder, "city.jpg", city: "Paris")
+  writeMedia(folder, "song.m4a", place: "Lyon")
+  writeMedia(folder, "clip.mp4", place: "Nantes")
+  writeMapLink(folder, "pin.webloc", urlString: "https://maps.apple.com/?q=Bordeaux")
+  writePhoto(folder, "exact.jpg", city: "Oslo")
+  writePhoto(folder, "long.jpg", city: "Oslo Heights District")
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  check(store.search(query: "paris").map(\.name).contains("city.jpg"), "a photo matches its place name")
+  check(store.search(query: "Lyon").map(\.name).contains("song.m4a"), "an audio file matches its place name")
+  check(store.search(query: "Nantes").map(\.name).contains("clip.mp4"), "a video matches its place name")
+  check(store.search(query: "Bordeaux").map(\.name).contains("pin.webloc"), "a map link matches the place it names")
+  let oslo = store.search(query: "Oslo").map(\.name)
+  guard let exact = oslo.firstIndex(of: "exact.jpg"), let long = oslo.firstIndex(of: "long.jpg") else {
+    check(false, "both place matches appear, got \(oslo)")
+    return
+  }
+  check(exact < long, "the tighter place name ranks first in the tier, got \(oslo)")
+}
+
+private func testOrdinaryFileAndMissingPlaceDoNotMatch() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("desk", isDirectory: true)
+  write(folder, "notes.txt", "Meet in Paris tomorrow")
+  writePhoto(folder, "plain.jpg", city: nil)
+  writeMedia(folder, "silent.m4a", place: nil)
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  check(store.search(query: "Paris").isEmpty, "an ordinary file does not gain a place name")
+  check(store.search(query: "plain").map(\.name).contains("plain.jpg"), "a photo with no place name is still indexed")
+  check(store.search(query: "Paris").map(\.name).contains("plain.jpg") == false, "a photo with no place name does not match")
+  check(store.search(query: "Paris").map(\.name).contains("silent.m4a") == false, "audio with no place name does not match")
+}
+
+private func testCoordinateIsNotAPlace() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("maps", isDirectory: true)
+  writePhoto(folder, "gps.jpg", city: nil, latitude: 48.8566)
+  writeMapLink(folder, "pin.webloc", urlString: "https://maps.apple.com/?ll=48.8566,2.3522")
+  writeMedia(folder, "where.m4a", place: "+48.8566+002.3522/")
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  for query in ["48.8566", "2.3522", "Paris"] {
+    check(store.search(query: query).isEmpty, "\(query) is not a place match")
+  }
+}
+
+private func testPlaceRanksWithDatesBelowPathAndName() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("library", isDirectory: true)
+  write(folder, "May.txt")
+  write(folder, "May/form.txt")
+  write(folder, "notes.txt")
+  writePhoto(folder, "trip.jpg", city: "Mayfair Heights")
+  let may = localDate(2019, 5, 2, 8, 0)
+  let longAgo = localDate(2010, 1, 1, 8, 0)
+  setClocks(folder, "May.txt", created: longAgo, modified: longAgo)
+  setClocks(folder, "May/form.txt", created: longAgo, modified: longAgo)
+  setClocks(folder, "notes.txt", created: localDate(2010, 1, 1, 8, 0), modified: may)
+  setClocks(folder, "trip.jpg", created: longAgo, modified: longAgo)
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  let names = store.search(query: "May").map(\.name)
+  guard let nameIndex = names.firstIndex(of: "May.txt"),
+        let pathIndex = names.firstIndex(of: "form.txt"),
+        let dateIndex = names.firstIndex(of: "notes.txt"),
+        let placeIndex = names.firstIndex(of: "trip.jpg") else {
+    check(false, "name, path, date, and place matches all appear, got \(names)")
+    return
+  }
+  check(nameIndex < pathIndex, "a name match ranks above a path match, got \(names)")
+  check(pathIndex < dateIndex, "a date match ranks below a path match, got \(names)")
+  check(pathIndex < placeIndex, "a place match ranks below a path match, got \(names)")
+  check(dateIndex < placeIndex, "inside the bottom tier the tighter score ranks first, got \(names)")
+  check(names.filter { $0 == "May.txt" }.count == 1, "a file that matches its name and its place appears once")
+}
+
+private func testNameAndPlaceAppearsOnce() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("photos", isDirectory: true)
+  writePhoto(folder, "Paris.jpg", city: "Paris")
+  writePhoto(folder, "trip.jpg", city: "Paris")
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  let names = store.search(query: "Paris").map(\.name)
+  check(names.filter { $0 == "Paris.jpg" }.count == 1, "a photo that matches its name and its place appears once")
+  guard let nameIndex = names.firstIndex(of: "Paris.jpg"),
+        let placeIndex = names.firstIndex(of: "trip.jpg") else {
+    check(false, "the name match and the place match both appear, got \(names)")
+    return
+  }
+  check(nameIndex < placeIndex, "the name match ranks above the place match, got \(names)")
+}
+
 let tests: [(String, () -> Void)] = [
   ("name contains is case insensitive", testNameContainsIsCaseInsensitive),
   ("higher fuzzy score ranks first", testHigherFuzzyScoreRanksFirst),
@@ -397,6 +585,11 @@ let tests: [(String, () -> Void)] = [
   ("clocks match a year, month, date, and minute", testClocksMatchYearMonthDateAndMinute),
   ("yesterday does not match the clock", testYesterdayDoesNotMatchTheClock),
   ("a date match ranks below a path match and a name match", testDateMatchRanksBelowPathAndName),
+  ("place names match for media and map links", testPlaceNamesForMediaAndMapLinks),
+  ("an ordinary file and a missing place do not match", testOrdinaryFileAndMissingPlaceDoNotMatch),
+  ("a coordinate is not a place", testCoordinateIsNotAPlace),
+  ("a place match ranks with dates below path and name", testPlaceRanksWithDatesBelowPathAndName),
+  ("a name and a place appear once", testNameAndPlaceAppearsOnce),
 ]
 
 @main
