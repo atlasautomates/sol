@@ -310,10 +310,12 @@ private func testClocksMatchYearMonthDateAndMinute() {
   let folder = root.appendingPathComponent("papers", isDirectory: true)
   write(folder, "alpha.txt")
   write(folder, "beta.txt")
+  // APFS drops a creation time that is later than the modification time.
+  // The later clock is written as the modification time.
   setClocks(
     folder, "alpha.txt",
-    created: localDate(2026, 10, 28, 9, 15),
-    modified: localDate(2010, 1, 1, 8, 0)
+    created: localDate(2010, 1, 1, 8, 0),
+    modified: localDate(2026, 10, 28, 9, 15)
   )
   setClocks(
     folder, "beta.txt",
@@ -323,11 +325,11 @@ private func testClocksMatchYearMonthDateAndMinute() {
   let store = index(at: root)
   waitFor { store.setSearchFolders([folder.path], completion: $0) }
 
-  check(store.search(query: "2026").map(\.name).contains("alpha.txt"), "a creation year matches")
+  check(store.search(query: "2026").map(\.name).contains("alpha.txt"), "a modification year matches")
   check(store.search(query: "October").map(\.name).contains("alpha.txt"), "an English month name matches")
   check(store.search(query: "october").map(\.name).contains("alpha.txt"), "a month name is case insensitive")
   check(store.search(query: "2026-10-28").map(\.name).contains("alpha.txt"), "a calendar date matches")
-  check(store.search(query: "2010").map(\.name).contains("alpha.txt"), "a modification year matches")
+  check(store.search(query: "2010").map(\.name).contains("alpha.txt"), "a creation year matches")
   check(store.search(query: "14:05").map(\.name).contains("beta.txt"), "an hour and minute matches the modification time")
   check(store.search(query: "April").map(\.name).contains("beta.txt"), "a modification month matches")
   check(store.search(query: "2001").map(\.name).contains("beta.txt"), "a creation year matches when the modification year differs")
