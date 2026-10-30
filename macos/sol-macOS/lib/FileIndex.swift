@@ -332,6 +332,11 @@ final class FileIndex {
   }
 
   private func shouldSkip(name: String, info: EntryInfo) -> Bool {
+    // A leading dot is a hidden name. Skip the entry and, when it is a
+    // directory, do not descend. That keeps .env and the inside of .git out.
+    if name.hasPrefix(".") {
+      return true
+    }
     if name == "node_modules" && (info.isDirectory || info.isSymlink) {
       return true
     }
@@ -346,12 +351,16 @@ final class FileIndex {
     let roots = Set(searchFolders)
     var current = url
     while true {
-      let info = inspect(current.path)
-      if info.isPackage || (current.lastPathComponent == "node_modules" && (info.isDirectory || info.isSymlink)) {
-        return true
-      }
       if roots.contains(current.path) {
         return false
+      }
+      let name = current.lastPathComponent
+      if name.hasPrefix(".") {
+        return true
+      }
+      let info = inspect(current.path)
+      if info.isPackage || (name == "node_modules" && (info.isDirectory || info.isSymlink)) {
+        return true
       }
       let parent = current.deletingLastPathComponent()
       if parent.path == current.path {
