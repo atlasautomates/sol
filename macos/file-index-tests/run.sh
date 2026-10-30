@@ -6,6 +6,9 @@ OUT="${TMPDIR:-/tmp}file-index-acceptance"
 swiftc \
   -framework Foundation \
   -framework CoreServices \
+  -framework ImageIO \
+  -framework CoreGraphics \
+  -framework UniformTypeIdentifiers \
   -lsqlite3 \
   -import-objc-header "$ROOT/macos/file-index-tests/Bridging.h" \
   -I "$ROOT/macos/sol-macOS/lib" \
