@@ -195,6 +195,63 @@ private func testRemoveFolderDropsItsFiles() {
   check(store.search(query: "stay").map(\.name).contains("stay.txt"), "another search folder stays")
 }
 
+private func testPathMatchRanksBelowNameMatch() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("library", isDirectory: true)
+  write(folder, "Invoices/notes.txt")
+  write(folder, "Invoices/invoices.txt")
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  let names = store.search(query: "invoices").map(\.name)
+  check(names.contains("notes.txt"), "a file inside Invoices matches invoices")
+  check(names.contains("invoices.txt"), "a name match still appears")
+  check(names.filter { $0 == "invoices.txt" }.count == 1, "a file that matches name and path appears once")
+  if let nameIndex = names.firstIndex(of: "invoices.txt"),
+     let pathIndex = names.firstIndex(of: "notes.txt") {
+    check(nameIndex < pathIndex, "a name match ranks above a path match")
+  }
+}
+
+private func testSearchFolderNameDoesNotMatch() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("Documents", isDirectory: true)
+  write(folder, "notes.txt")
+  write(folder, "Taxes/form.txt")
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  check(
+    store.search(query: "documents").isEmpty,
+    "the search folder's own name does not match every file inside it"
+  )
+  check(
+    store.search(query: "taxes").map(\.name).contains("form.txt"),
+    "a folder inside the search folder still matches"
+  )
+}
+
+private func testPathTierUsesFuzzyScore() {
+  let root = makeRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let folder = root.appendingPathComponent("library", isDirectory: true)
+  write(folder, "Invoices/zzz.txt")
+  write(folder, "Invoices-and-a-very-long-folder-name/aaa.txt")
+  let store = index(at: root)
+  waitFor { store.setSearchFolders([folder.path], completion: $0) }
+  let names = store.search(query: "invoices").map(\.name)
+  guard let zzz = names.firstIndex(of: "zzz.txt"), let aaa = names.firstIndex(of: "aaa.txt") else {
+    check(false, "both path matches appear, got \(names)")
+    return
+  }
+  check(zzz < aaa, "the tighter folder ranks first in the path tier, got \(names)")
+  for folder in ["Invoices", "Invoices-and-a-very-long-folder-name"] {
+    if let folderIndex = names.firstIndex(of: folder) {
+      check(folderIndex < zzz, "a folder whose name matches ranks above a path match")
+    }
+  }
+}
+
 private func testEmptyDatabaseWalks() {
   let root = makeRoot()
   defer { try? FileManager.default.removeItem(at: root) }
@@ -231,6 +288,9 @@ let tests: [(String, () -> Void)] = [
   ("remove folder drops its files", testRemoveFolderDropsItsFiles),
   ("empty database walks", testEmptyDatabaseWalks),
   ("populated database does not walk again", testPopulatedDatabaseDoesNotWalkAgain),
+  ("path match ranks below a name match", testPathMatchRanksBelowNameMatch),
+  ("search folder name does not match", testSearchFolderNameDoesNotMatch),
+  ("path tier uses fuzzy score", testPathTierUsesFuzzyScore),
 ]
 
 @main
