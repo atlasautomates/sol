@@ -56,10 +56,14 @@ export const FileSearchWidget: FC<Props> = observer(() => {
 	const selectedIndex = store.ui.selectedIndex;
 	const query = store.ui.query;
 	const listRef = useRef<LegendListRef | null>(null);
+	// The list can already be at its end on the first layout. That is not a
+	// scroll, and it must not reveal the next page before the first paint of 10.
+	const hasScrolled = useRef(false);
 
 	const runFileSearch = store.ui.runFileSearch;
 
 	useEffect(() => {
+		hasScrolled.current = false;
 		const timer = setTimeout(() => {
 			void runFileSearch(query);
 		}, 150);
@@ -86,6 +90,17 @@ export const FileSearchWidget: FC<Props> = observer(() => {
 				className="flex-1"
 				contentContainerStyle={STYLES.contentContainer}
 				ref={listRef}
+				onScroll={(event) => {
+					if (event.nativeEvent.contentOffset.y > 0) {
+						hasScrolled.current = true;
+					}
+				}}
+				onEndReached={() => {
+					if (hasScrolled.current) {
+						store.ui.revealMoreFiles();
+					}
+				}}
+				onEndReachedThreshold={0.2}
 				ListEmptyComponent={
 					<View className="flex-1 justify-center items-center">
 						<Text className="dark:text-neutral-700 text-sm text-neutral-500">

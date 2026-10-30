@@ -2,6 +2,12 @@ import * as Sentry from "@sentry/react-native";
 import { Assets } from "assets";
 import { Parser } from "expr-eval";
 import { CONSTANTS } from "lib/constants";
+import {
+	FILE_SEARCH_PAGE,
+	fileSearchPage,
+	revealFileSearch,
+	visibleFiles,
+} from "lib/fileSearchPage";
 import { solNative } from "lib/SolNative";
 import {
 	defaultShortcuts,
@@ -451,6 +457,7 @@ export const createUIStore = (root: IRootStore) => {
 		isLoading: false,
 		isIndexing: false,
 		indexedFileResults: [] as Item[],
+		fileSearchShown: FILE_SEARCH_PAGE,
 		translationResults: [] as string[],
 		frequencies: {} as Record<string, number>,
 		selectionTimestamps: {} as Record<string, number>,
@@ -493,12 +500,24 @@ export const createUIStore = (root: IRootStore) => {
 		//                        | |
 		//                        |_|
 		get files(): Item[] {
-			return store.indexedFileResults;
+			return visibleFiles({
+				results: store.indexedFileResults,
+				shown: store.fileSearchShown,
+			});
+		},
+		revealMoreFiles: () => {
+			const page = revealFileSearch({
+				results: store.indexedFileResults,
+				shown: store.fileSearchShown,
+			});
+			store.fileSearchShown = page.shown;
 		},
 		runFileSearch: async (query: string) => {
 			if (!query || store.focusedWidget !== Widget.FILE_SEARCH) {
+				const cleared = fileSearchPage<Item>([]);
 				runInAction(() => {
-					store.indexedFileResults = [];
+					store.indexedFileResults = cleared.results;
+					store.fileSearchShown = cleared.shown;
 					store.isLoading = false;
 				});
 				return;
@@ -507,13 +526,17 @@ export const createUIStore = (root: IRootStore) => {
 				store.isLoading = true;
 			});
 			const results = await solNative.searchFilesIndexed(query);
-			runInAction(() => {
-				store.indexedFileResults = results.map((f) => ({
+			const page = fileSearchPage(
+				results.map((f) => ({
 					id: f.path,
 					type: ItemType.FILE,
 					name: f.name,
 					url: f.path,
-				}));
+				})),
+			);
+			runInAction(() => {
+				store.indexedFileResults = page.results;
+				store.fileSearchShown = page.shown;
 				store.isLoading = false;
 			});
 		},
