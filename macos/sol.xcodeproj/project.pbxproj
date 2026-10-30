@@ -46,8 +46,7 @@
 		70969E192796719100BE3F1C /* SolNative.mm in Sources */ = {isa = PBXBuildFile; fileRef = 70969E182796719100BE3F1C /* SolNative.mm */; };
 		70A07EBB29B48F4000D1885E /* MediaKeyForwarder.m in Sources */ = {isa = PBXBuildFile; fileRef = 70A07EBA29B48F4000D1885E /* MediaKeyForwarder.m */; };
 		70A198FD2F8A7B9D00B36D69 /* FileSearchIndexObjC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A198FB2F8A7B9D00B36D69 /* FileSearchIndexObjC.swift */; };
-		70A198FE2F8A7B9D00B36D69 /* FileSearchIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A198F92F8A7B9D00B36D69 /* FileSearchIndex.swift */; };
-		70A199002F8A7B9D00B36D69 /* FileSearchIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A198FA2F8A7B9D00B36D69 /* FileSearchIndexer.swift */; };
+		70F11D022F8A7B9D00B36D70 /* FileIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70F11D012F8A7B9D00B36D70 /* FileIndex.swift */; };
 		70A25D452D33AF4500165270 /* PanelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A25D442D33AF3E00165270 /* PanelManager.swift */; };
 		70A25D472D33B4D600165270 /* HotKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A25D462D33B4D300165270 /* HotKeyManager.swift */; };
 		70A25D492D33B9CF00165270 /* ToastManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A25D482D33B9C500165270 /* ToastManager.swift */; };
@@ -125,9 +124,8 @@
 		70A07EB929B48F1F00D1885E /* SpotifyApplication.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SpotifyApplication.h; sourceTree = "<group>"; };
 		70A07EBA29B48F4000D1885E /* MediaKeyForwarder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaKeyForwarder.m; sourceTree = "<group>"; };
 		70A07EBC29B491CF00D1885E /* MediaKeyForwarder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediaKeyForwarder.h; sourceTree = "<group>"; };
-		70A198F92F8A7B9D00B36D69 /* FileSearchIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSearchIndex.swift; sourceTree = "<group>"; };
-		70A198FA2F8A7B9D00B36D69 /* FileSearchIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSearchIndexer.swift; sourceTree = "<group>"; };
 		70A198FB2F8A7B9D00B36D69 /* FileSearchIndexObjC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSearchIndexObjC.swift; sourceTree = "<group>"; };
+		70F11D012F8A7B9D00B36D70 /* FileIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndex.swift; sourceTree = "<group>"; };
 		70A25D442D33AF3E00165270 /* PanelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelManager.swift; sourceTree = "<group>"; };
 		70A25D462D33B4D300165270 /* HotKeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyManager.swift; sourceTree = "<group>"; };
 		70A25D482D33B9C500165270 /* ToastManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastManager.swift; sourceTree = "<group>"; };
@@ -270,8 +268,7 @@
 		70F7EBEA2795A4BD00CED17A /* lib */ = {
 			isa = PBXGroup;
 			children = (
-				70A198F92F8A7B9D00B36D69 /* FileSearchIndex.swift */,
-				70A198FA2F8A7B9D00B36D69 /* FileSearchIndexer.swift */,
+				70F11D012F8A7B9D00B36D70 /* FileIndex.swift */,
 				70A198FB2F8A7B9D00B36D69 /* FileSearchIndexObjC.swift */,
 				7062E8342EA5331D008A9B69 /* FolderWatcherJSI.h */,
 				7062E8322EA53311008A9B69 /* FolderWatcherJSI.mm */,
@@ -624,8 +621,7 @@
 				7062E8332EA53319008A9B69 /* FolderWatcherJSI.mm in Sources */,
 				70AAC12029F7AB9B004AD3E7 /* GradientView.m in Sources */,
 				70A198FD2F8A7B9D00B36D69 /* FileSearchIndexObjC.swift in Sources */,
-				70A198FE2F8A7B9D00B36D69 /* FileSearchIndex.swift in Sources */,
-				70A199002F8A7B9D00B36D69 /* FileSearchIndexer.swift in Sources */,
+				70F11D022F8A7B9D00B36D70 /* FileIndex.swift in Sources */,
 				70A25D472D33B4D600165270 /* HotKeyManager.swift in Sources */,
 				700A18D8279DBBE40096C830 /* ApplicationSearcher.swift in Sources */,
 				70E80B61294C71520094F1B5 /* NSImage.swift in Sources */,

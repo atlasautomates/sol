@@ -158,23 +158,48 @@ void install(jsi::Runtime &rt,
     return res;
   });
 
-  auto hasIndexedContent = HOSTFN("hasIndexedContent", []) {
-    BOOL result = [FileSearchIndexObjC.shared hasIndexedContent];
-    return jsi::Value(rt, (bool)result);
-  });
-
-  auto startWatchingPaths = HOSTFN("startWatchingPaths", []) {
+  auto setSearchFolders = HOSTFN("setSearchFolders", []) {
     auto paths = arguments[0].asObject(rt).asArray(rt);
     NSMutableArray *pathsArray = [NSMutableArray array];
     for (size_t i = 0; i < paths.size(rt); i++) {
       auto path = paths.getValueAtIndex(rt, i).asString(rt).utf8(rt);
       [pathsArray addObject:[NSString stringWithUTF8String:path.c_str()]];
     }
-    [FileSearchIndexObjC.shared startWatchingPaths:pathsArray];
-    return jsi::Value::undefined();
+
+    auto promiseCtr = rt.global().getPropertyAsFunction(rt, "Promise");
+    auto promise = promiseCtr.callAsConstructor(
+      rt,
+      HOSTFN("executor", [pathsArray]) {
+        auto resolve = std::make_shared<jsi::Value>(rt, arguments[0]);
+        [FileSearchIndexObjC.shared setSearchFolders:pathsArray completion:^{
+          invoker->invokeAsync([resolve, &rt]() mutable {
+            resolve->asObject(rt).asFunction(rt).call(rt);
+          });
+        }];
+        return {};
+      }));
+
+    return promise;
   });
 
-  auto removeIndexedPath = HOSTFN("removeIndexedPath", []) {
+  auto reindex = HOSTFN("reindex", []) {
+    auto promiseCtr = rt.global().getPropertyAsFunction(rt, "Promise");
+    auto promise = promiseCtr.callAsConstructor(
+      rt,
+      HOSTFN("executor", []) {
+        auto resolve = std::make_shared<jsi::Value>(rt, arguments[0]);
+        [FileSearchIndexObjC.shared reindexWithCompletion:^{
+          invoker->invokeAsync([resolve, &rt]() mutable {
+            resolve->asObject(rt).asFunction(rt).call(rt);
+          });
+        }];
+        return {};
+      }));
+
+    return promise;
+  });
+
+  auto removeSearchFolder = HOSTFN("removeSearchFolder", []) {
     auto path = arguments[0].asString(rt).utf8(rt);
     NSString *pathStr = [NSString stringWithUTF8String:path.c_str()];
 
@@ -183,23 +208,15 @@ void install(jsi::Runtime &rt,
       rt,
       HOSTFN("executor", [pathStr]) {
         auto resolve = std::make_shared<jsi::Value>(rt, arguments[0]);
-
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-          [FileSearchIndexObjC.shared removeIndexedPath:pathStr];
+        [FileSearchIndexObjC.shared removeSearchFolder:pathStr completion:^{
           invoker->invokeAsync([resolve, &rt]() mutable {
             resolve->asObject(rt).asFunction(rt).call(rt);
           });
-        });
-
+        }];
         return {};
       }));
 
     return promise;
-  });
-
-  auto clearIndex = HOSTFN("clearIndex", []) {
-    [FileSearchIndexObjC.shared clearIndex];
-    return jsi::Value::undefined();
   });
 
   auto searchFilesIndexed = HOSTFN("searchFilesIndexed", []) {
@@ -244,46 +261,6 @@ void install(jsi::Runtime &rt,
 
         return {};
       }));
-
-    return promise;
-  });
-
-  auto indexPaths = HOSTFN("indexPaths", []) {
-    auto paths = arguments[0].asObject(rt).asArray(rt);
-
-    NSMutableArray *pathsArray = [NSMutableArray array];
-    for (size_t i = 0; i < paths.size(rt); i++) {
-      auto path = paths.getValueAtIndex(rt, i).asString(rt).utf8(rt);
-      [pathsArray addObject:[NSString stringWithUTF8String:path.c_str()]];
-    }
-
-    auto promiseCtr = rt.global().getPropertyAsFunction(rt, "Promise");
-    auto promise = promiseCtr.callAsConstructor(
-                                                rt,
-                                                HOSTFN("executor", [pathsArray]) {
-      auto resolve = std::make_shared<jsi::Value>(rt, arguments[0]);
-      auto reject = std::make_shared<jsi::Value>(rt, arguments[1]);
-
-      dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        @try {
-          [FileSearchIndexObjC.shared indexPathsWith:pathsArray];
-          invoker->invokeAsync([resolve, &rt]() mutable {
-            resolve->asObject(rt).asFunction(rt).call(rt);
-          });
-        } @catch (NSException *exception) {
-          invoker->invokeAsync([reject, exception, &rt]() mutable {
-            NSString *errorMessage =
-                [NSString stringWithFormat:@"Failed to index paths: %@",
-                                           [exception reason]];
-            auto error =
-                jsi::String::createFromUtf8(rt, [errorMessage UTF8String]);
-            reject->asObject(rt).asFunction(rt).call(rt, error);
-          });
-        }
-      });
-
-      return {};
-                                                }));
 
     return promise;
   });
@@ -849,11 +826,9 @@ void install(jsi::Runtime &rt,
   module.setProperty(rt, "showWindow", std::move(showWindow));
   // module.setProperty(rt, "getMediaInfo", std::move(getMediaInfo));
   module.setProperty(rt, "searchFilesIndexed", std::move(searchFilesIndexed));
-  module.setProperty(rt, "hasIndexedContent", std::move(hasIndexedContent));
-  module.setProperty(rt, "startWatchingPaths", std::move(startWatchingPaths));
-  module.setProperty(rt, "removeIndexedPath", std::move(removeIndexedPath));
-  module.setProperty(rt, "clearIndex", std::move(clearIndex));
-  module.setProperty(rt, "indexPaths", std::move(indexPaths));
+  module.setProperty(rt, "setSearchFolders", std::move(setSearchFolders));
+  module.setProperty(rt, "reindex", std::move(reindex));
+  module.setProperty(rt, "removeSearchFolder", std::move(removeSearchFolder));
   module.setProperty(rt, "requestCalendarAccess",
                      std::move(requestCalendarAccess));
   module.setProperty(rt, "getCalendarAuthorizationStatus",

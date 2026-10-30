@@ -417,6 +417,9 @@ export const createUIStore = (root: IRootStore) => {
 
 	const baseItems = createBaseItems(root);
 
+	let fileIndexWalk = 0;
+	let startFileIndexWalk = (): (() => void) => () => {};
+
 	const store = makeAutoObservable({
 		//    ____  _                              _     _
 		//   / __ \| |                            | |   | |
@@ -1114,30 +1117,19 @@ export const createUIStore = (root: IRootStore) => {
 
 		addSearchFolder: (folder: string) => {
 			store.searchFolders.push(folder);
-			store.isIndexing = true;
-			void solNative.indexPaths([folder]).then(() => {
-				runInAction(() => {
-					store.isIndexing = false;
-				});
-			});
+			const finish = startFileIndexWalk();
+			void solNative.setSearchFolders(toJS(store.searchFolders)).finally(finish);
 		},
 
 		removeSearchFolder: (folder: string) => {
 			store.searchFolders = store.searchFolders.filter((f) => f !== folder);
-			void solNative.removeIndexedPath(folder);
+			void solNative.removeSearchFolder(folder);
 		},
 
 		reindexAll: () => {
-			solNative.clearIndex();
 			if (store.searchFolders.length === 0) return;
-			runInAction(() => {
-				store.isIndexing = true;
-			});
-			void solNative.indexPaths(toJS(store.searchFolders)).then(() => {
-				runInAction(() => {
-					store.isIndexing = false;
-				});
-			});
+			const finish = startFileIndexWalk();
+			void solNative.reindex().finally(finish);
 		},
 
 		setSearchEngine: (engine: SearchEngine) => {
@@ -1311,6 +1303,22 @@ export const createUIStore = (root: IRootStore) => {
 		reloadJsonConfig,
 	});
 
+	startFileIndexWalk = () => {
+		fileIndexWalk += 1;
+		const walk = fileIndexWalk;
+		runInAction(() => {
+			store.isIndexing = true;
+		});
+		return () => {
+			if (walk !== fileIndexWalk) {
+				return;
+			}
+			runInAction(() => {
+				store.isIndexing = false;
+			});
+		};
+	};
+
 	bookmarksDisposer = reaction(
 		() => [store.showInAppBrowserBookMarks],
 		() => {
@@ -1331,19 +1339,8 @@ export const createUIStore = (root: IRootStore) => {
 		);
 
 		if (store.searchFolders.length > 0) {
-			if (!solNative.hasIndexedContent()) {
-				runInAction(() => {
-					store.isIndexing = true;
-				});
-				void solNative.indexPaths(toJS(store.searchFolders)).then(() => {
-					runInAction(() => {
-						store.isIndexing = false;
-					});
-				});
-			} else {
-				// DB already populated — just start watching for changes
-				solNative.startWatchingPaths(toJS(store.searchFolders));
-			}
+			const finish = startFileIndexWalk();
+			void solNative.setSearchFolders(toJS(store.searchFolders)).finally(finish);
 		}
 	});
 
