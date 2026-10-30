@@ -218,15 +218,20 @@ let tests: [(String, () -> Void)] = [
   ("populated database does not walk again", testPopulatedDatabaseDoesNotWalkAgain),
 ]
 
-for (name, test) in tests {
-  let before = failures.count
-  test()
-  if failures.count == before {
-    fputs("ok \(name)\n", stdout)
-  }
-}
+@main
+struct FileIndexAcceptanceMain {
+  static func main() {
+    for (name, test) in tests {
+      let before = failures.count
+      test()
+      if failures.count == before {
+        fputs("ok \(name)\n", stdout)
+      }
+    }
 
-if !failures.isEmpty {
-  fputs("\(failures.count) failed\n", stderr)
-  exit(1)
+    if !failures.isEmpty {
+      fputs("\(failures.count) failed\n", stderr)
+      exit(1)
+    }
+  }
 }
