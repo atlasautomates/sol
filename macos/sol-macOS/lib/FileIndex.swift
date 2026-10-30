@@ -61,6 +61,17 @@ final class FileIndex {
           self.walk(folder)
         }
         self.replaceRecordedFolders(folders)
+      } else if self.hasUnfilledClocks() {
+        // Rows from before clocks and place names existed have a null
+        // clock_text. Walk once to fill them. A later launch sees real
+        // clock text and only watches. Rows this walk does not visit are
+        // marked empty so a leftover path cannot force another walk.
+        for folder in folders {
+          self.walk(folder)
+        }
+        self.exec(self.writeDB, "UPDATE files SET clock_text = '' WHERE clock_text IS NULL;")
+        self.exec(self.writeDB, "UPDATE files SET place_name = '' WHERE place_name IS NULL;")
+        self.replaceRecordedFolders(folders)
       } else if recorded.isEmpty {
         // Files are already stored, but this database has no record of which
         // search folders were walked. That is an index from before this
@@ -204,6 +215,22 @@ final class FileIndex {
     guard let db = writeDB else { return false }
     var statement: OpaquePointer?
     guard sqlite3_prepare_v2(db, "SELECT 1 FROM files LIMIT 1;", -1, &statement, nil) == SQLITE_OK else {
+      return false
+    }
+    defer { sqlite3_finalize(statement) }
+    return sqlite3_step(statement) == SQLITE_ROW
+  }
+
+  private func hasUnfilledClocks() -> Bool {
+    guard let db = writeDB else { return false }
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(
+      db,
+      "SELECT 1 FROM files WHERE clock_text IS NULL LIMIT 1;",
+      -1,
+      &statement,
+      nil
+    ) == SQLITE_OK else {
       return false
     }
     defer { sqlite3_finalize(statement) }
