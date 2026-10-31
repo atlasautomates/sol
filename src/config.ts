@@ -3,7 +3,12 @@ import Fuse, {IFuseOptions} from 'fuse.js'
 import * as Sentry from '@sentry/react-native'
 import {SentryDSN} from './env'
 
-LogBox.ignoreLogs(['Clipboard ', 'Component', 'Require cycle:'])
+LogBox.ignoreLogs([
+  'Clipboard ',
+  'Component',
+  'Require cycle:',
+  'Open debugger to view warnings.',
+])
 
 export const FUSE_OPTIONS: IFuseOptions<any> = {
   threshold: 0.15,

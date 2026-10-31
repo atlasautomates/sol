@@ -1,7 +1,7 @@
 import { Assets } from "assets";
 import clsx from "clsx";
 import { observer } from "mobx-react-lite";
-import { DevSettings, Image, Text, TouchableOpacity, View } from "react-native";
+import { DevSettings, Image, TouchableOpacity, View } from "react-native";
 import { TextInput } from "react-native-macos";
 import { useStore } from "store";
 import { Widget } from "stores/ui.store";
@@ -64,11 +64,6 @@ export const MainInput = observer<Props>(
 					})}
 					placeholder={placeholder}
 				/>
-				{__DEV__ && (
-					<TouchableOpacity onPress={reloadApp}>
-						<Text>Debug</Text>
-					</TouchableOpacity>
-				)}
 			</View>
 		);
 	},

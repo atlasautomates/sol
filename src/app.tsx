@@ -13,7 +13,11 @@ const userTheme = vars({
 	"--color-accent": `${accentRgb?.r}, ${accentRgb?.g}, ${accentRgb?.b}`,
 });
 
-LogBox.ignoreLogs(["Sending ", "[legend-list]"]);
+LogBox.ignoreLogs([
+	"Sending ",
+	"[legend-list]",
+	"Open debugger to view warnings.",
+]);
 
 remapProps(LegendList, {
 	className: "style",
