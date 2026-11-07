@@ -165,13 +165,17 @@ void install(jsi::Runtime &rt,
       auto path = paths.getValueAtIndex(rt, i).asString(rt).utf8(rt);
       [pathsArray addObject:[NSString stringWithUTF8String:path.c_str()]];
     }
+    [FileSearchIndexObjC.shared setSearchFolders:pathsArray];
+    return {};
+  });
 
+  auto updateFileIndex = HOSTFN("updateFileIndex", []) {
     auto promiseCtr = rt.global().getPropertyAsFunction(rt, "Promise");
     auto promise = promiseCtr.callAsConstructor(
       rt,
-      HOSTFN("executor", [pathsArray]) {
+      HOSTFN("executor", []) {
         auto resolve = std::make_shared<jsi::Value>(rt, arguments[0]);
-        [FileSearchIndexObjC.shared setSearchFolders:pathsArray completion:^{
+        [FileSearchIndexObjC.shared updateWithCompletion:^{
           invoker->invokeAsync([resolve, &rt]() mutable {
             resolve->asObject(rt).asFunction(rt).call(rt);
           });
@@ -182,13 +186,33 @@ void install(jsi::Runtime &rt,
     return promise;
   });
 
-  auto reindex = HOSTFN("reindex", []) {
+  auto clearFileIndex = HOSTFN("clearFileIndex", []) {
     auto promiseCtr = rt.global().getPropertyAsFunction(rt, "Promise");
     auto promise = promiseCtr.callAsConstructor(
       rt,
       HOSTFN("executor", []) {
         auto resolve = std::make_shared<jsi::Value>(rt, arguments[0]);
-        [FileSearchIndexObjC.shared reindexWithCompletion:^{
+        [FileSearchIndexObjC.shared clearWithCompletion:^{
+          invoker->invokeAsync([resolve, &rt]() mutable {
+            resolve->asObject(rt).asFunction(rt).call(rt);
+          });
+        }];
+        return {};
+      }));
+
+    return promise;
+  });
+
+  auto addSearchFolder = HOSTFN("addSearchFolder", []) {
+    auto path = arguments[0].asString(rt).utf8(rt);
+    NSString *pathStr = [NSString stringWithUTF8String:path.c_str()];
+
+    auto promiseCtr = rt.global().getPropertyAsFunction(rt, "Promise");
+    auto promise = promiseCtr.callAsConstructor(
+      rt,
+      HOSTFN("executor", [pathStr]) {
+        auto resolve = std::make_shared<jsi::Value>(rt, arguments[0]);
+        [FileSearchIndexObjC.shared addSearchFolder:pathStr completion:^{
           invoker->invokeAsync([resolve, &rt]() mutable {
             resolve->asObject(rt).asFunction(rt).call(rt);
           });
@@ -827,7 +851,9 @@ void install(jsi::Runtime &rt,
   // module.setProperty(rt, "getMediaInfo", std::move(getMediaInfo));
   module.setProperty(rt, "searchFilesIndexed", std::move(searchFilesIndexed));
   module.setProperty(rt, "setSearchFolders", std::move(setSearchFolders));
-  module.setProperty(rt, "reindex", std::move(reindex));
+  module.setProperty(rt, "updateFileIndex", std::move(updateFileIndex));
+  module.setProperty(rt, "clearFileIndex", std::move(clearFileIndex));
+  module.setProperty(rt, "addSearchFolder", std::move(addSearchFolder));
   module.setProperty(rt, "removeSearchFolder", std::move(removeSearchFolder));
   module.setProperty(rt, "requestCalendarAccess",
                      std::move(requestCalendarAccess));

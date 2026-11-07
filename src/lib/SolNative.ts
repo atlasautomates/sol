@@ -64,7 +64,9 @@ class SolNative extends NativeEventEmitter {
 	resizeRightTwoThirds: () => void;
 	searchFilesIndexed: typeof global.__SolProxy.searchFilesIndexed;
 	setSearchFolders: typeof global.__SolProxy.setSearchFolders;
-	reindex: typeof global.__SolProxy.reindex;
+	updateFileIndex: typeof global.__SolProxy.updateFileIndex;
+	clearFileIndex: typeof global.__SolProxy.clearFileIndex;
+	addSearchFolder: typeof global.__SolProxy.addSearchFolder;
 	removeSearchFolder: typeof global.__SolProxy.removeSearchFolder;
 	setShowWindowOn: (on: "screenWithFrontmost" | "screenWithCursor") => void;
 	useBackgroundOverlay: (v: boolean) => void;
@@ -174,7 +176,9 @@ class SolNative extends NativeEventEmitter {
 		this.toggleDND = module.toggleDND;
 		this.searchFilesIndexed = global.__SolProxy.searchFilesIndexed;
 		this.setSearchFolders = global.__SolProxy.setSearchFolders;
-		this.reindex = global.__SolProxy.reindex;
+		this.updateFileIndex = global.__SolProxy.updateFileIndex;
+		this.clearFileIndex = global.__SolProxy.clearFileIndex;
+		this.addSearchFolder = global.__SolProxy.addSearchFolder;
 		this.removeSearchFolder = global.__SolProxy.removeSearchFolder;
 
 		this.setWindowHeight = global.__SolProxy.setHeight;

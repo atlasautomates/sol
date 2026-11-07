@@ -16,14 +16,24 @@ import Foundation
     }
   }
 
-  @objc(setSearchFolders:completion:)
-  func setSearchFolders(_ paths: [String], completion: @escaping () -> Void) {
-    index.setSearchFolders(paths, completion: completion)
+  @objc(setSearchFolders:)
+  func setSearchFolders(_ paths: [String]) {
+    index.setSearchFolders(paths)
   }
 
-  @objc(reindexWithCompletion:)
-  func reindex(_ completion: @escaping () -> Void) {
-    index.reindex(completion: completion)
+  @objc(updateWithCompletion:)
+  func update(_ completion: @escaping () -> Void) {
+    index.update(completion: completion)
+  }
+
+  @objc(addSearchFolder:completion:)
+  func addSearchFolder(_ path: String, completion: @escaping () -> Void) {
+    index.addSearchFolder(path, completion: completion)
+  }
+
+  @objc(clearWithCompletion:)
+  func clear(_ completion: @escaping () -> Void) {
+    index.clear(completion: completion)
   }
 
   @objc(removeSearchFolder:completion:)

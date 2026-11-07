@@ -96,9 +96,16 @@ export const General = observer(() => {
 			</View>
 
 			<View className="z-10 p-3 gap-1 subBg rounded-lg border border-lightBorder dark:border-darkBorder">
-				<Text className="">File Search Paths</Text>
+				<View className="flex-row items-center">
+					<Text className="flex-1">File Search</Text>
+					<MySwitch
+						value={store.ui.fileSearchEnabled}
+						onValueChange={store.ui.setFileSearchEnabled}
+					/>
+				</View>
 				<Text className="text-xxs text-neutral-500 dark:text-neutral-400">
-					Add folders for the Search Files functionality.
+					Add folders for the Search Files functionality. Sol only indexes when
+					you press Update. Turning this off deletes the index.
 				</Text>
 				<View className="mt-2">
 					{store.ui.searchFolders.map((folder, idx) => {
@@ -132,11 +139,11 @@ export const General = observer(() => {
 				<View className="justify-end flex-row mt-2 gap-4">
 					<TouchableOpacity
 						onPress={() => {
-							store.ui.reindexAll();
+							store.ui.updateFileIndex();
 						}}
 					>
 						<Text className="text-neutral-500">
-							{store.ui.isIndexing ? "Indexing..." : "Re-index"}
+							{store.ui.isIndexing ? "Indexing..." : "Update"}
 						</Text>
 					</TouchableOpacity>
 					<TouchableOpacity

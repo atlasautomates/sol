@@ -16,6 +16,7 @@ export const PORTABLE_KEYS = [
 	"showUpcomingEvent",
 	"scratchPadColor",
 	"searchFolders",
+	"fileSearchEnabled",
 	"searchEngine",
 	"customSearchUrl",
 	"shortcuts",

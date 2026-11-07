@@ -52,8 +52,10 @@ declare const global: {
 		searchFilesIndexed: (
 			query: string,
 		) => Promise<{ name: string; path: string; isFolder: boolean }[]>;
-		setSearchFolders: (paths: string[]) => Promise<void>;
-		reindex: () => Promise<void>;
+		setSearchFolders: (paths: string[]) => void;
+		updateFileIndex: () => Promise<void>;
+		clearFileIndex: () => Promise<void>;
+		addSearchFolder: (path: string) => Promise<void>;
 		removeSearchFolder: (path: string) => Promise<void>;
 		requestCalendarAccess: () => Promise<void>;
 		getCalendarAuthorizationStatus: () => CalendarAuthorizationStatus;

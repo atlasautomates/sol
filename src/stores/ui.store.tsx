@@ -308,6 +308,7 @@ export const createUIStore = (root: IRootStore) => {
 					store.showUpcomingEvent = src.showUpcomingEvent ?? true;
 					store.scratchPadColor = src.scratchPadColor ?? ScratchPadColor.SYSTEM;
 					store.searchFolders = src.searchFolders ?? defaultSearchFolders;
+					store.fileSearchEnabled = src.fileSearchEnabled ?? true;
 					store.searchEngine = src.searchEngine ?? "google";
 					store.customSearchUrl =
 						src.customSearchUrl ?? "https://google.com/search?q=%s";
@@ -354,6 +355,7 @@ export const createUIStore = (root: IRootStore) => {
 
 	const reloadJsonConfig = async () => {
 		isHydrating = true;
+		const fileSearchWasEnabled = store.fileSearchEnabled;
 		try {
 			const jsonConfig = await readPersistedUIState();
 			if (!jsonConfig) return;
@@ -393,6 +395,8 @@ export const createUIStore = (root: IRootStore) => {
 					store.scratchPadColor = jsonConfig.scratchPadColor;
 				if (jsonConfig.searchFolders !== undefined)
 					store.searchFolders = jsonConfig.searchFolders;
+				if (jsonConfig.fileSearchEnabled !== undefined)
+					store.fileSearchEnabled = jsonConfig.fileSearchEnabled;
 				if (jsonConfig.searchEngine !== undefined)
 					store.searchEngine = jsonConfig.searchEngine;
 				if (jsonConfig.customSearchUrl !== undefined)
@@ -416,6 +420,11 @@ export const createUIStore = (root: IRootStore) => {
 			solNative.setMediaKeyForwardingEnabled(store.mediaKeyForwardingEnabled);
 			solNative.setHyperKeyEnabled(store.hyperKeyEnabled);
 			solNative.updateHotkeys(toJS(store.shortcuts));
+			if (store.fileSearchEnabled) {
+				solNative.setSearchFolders(toJS(store.searchFolders));
+			} else if (fileSearchWasEnabled) {
+				void solNative.clearFileIndex();
+			}
 		} finally {
 			isHydrating = false;
 		}
@@ -478,6 +487,7 @@ export const createUIStore = (root: IRootStore) => {
 		showUpcomingEvent: true,
 		scratchPadColor: ScratchPadColor.SYSTEM,
 		searchFolders: [] as string[],
+		fileSearchEnabled: true,
 		shortcuts: defaultShortcuts as Record<string, string>,
 		showInAppBrowserBookMarks: true,
 		hoveredEventId: null as string | null,
@@ -513,7 +523,11 @@ export const createUIStore = (root: IRootStore) => {
 			store.fileSearchShown = page.shown;
 		},
 		runFileSearch: async (query: string) => {
-			if (!query || store.focusedWidget !== Widget.FILE_SEARCH) {
+			if (
+				!store.fileSearchEnabled ||
+				!query ||
+				store.focusedWidget !== Widget.FILE_SEARCH
+			) {
 				const cleared = fileSearchPage<Item>([]);
 				runInAction(() => {
 					store.indexedFileResults = cleared.results;
@@ -691,6 +705,7 @@ export const createUIStore = (root: IRootStore) => {
 			);
 		},
 		isItemDisabled: (itemId: string) => {
+			if (itemId === "file_search" && !store.fileSearchEnabled) return true;
 			return store.disabledItemIds.includes(itemId);
 		},
 		translateQuery: async () => {
@@ -1134,25 +1149,40 @@ export const createUIStore = (root: IRootStore) => {
 		},
 
 		showFileSearch: () => {
+			// An item shortcut reaches here without passing isItemDisabled.
+			if (!store.fileSearchEnabled) return;
 			store.focusWidget(Widget.FILE_SEARCH);
 			store.query = "";
 		},
 
 		addSearchFolder: (folder: string) => {
 			store.searchFolders.push(folder);
+			if (!store.fileSearchEnabled) return;
 			const finish = startFileIndexWalk();
-			void solNative.setSearchFolders(toJS(store.searchFolders)).finally(finish);
+			void solNative.addSearchFolder(folder).finally(finish);
 		},
 
 		removeSearchFolder: (folder: string) => {
 			store.searchFolders = store.searchFolders.filter((f) => f !== folder);
+			if (!store.fileSearchEnabled) return;
 			void solNative.removeSearchFolder(folder);
 		},
 
-		reindexAll: () => {
-			if (store.searchFolders.length === 0) return;
+		updateFileIndex: () => {
+			if (!store.fileSearchEnabled || store.searchFolders.length === 0) return;
 			const finish = startFileIndexWalk();
-			void solNative.reindex().finally(finish);
+			void solNative.updateFileIndex().finally(finish);
+		},
+
+		setFileSearchEnabled: (enabled: boolean) => {
+			store.fileSearchEnabled = enabled;
+			if (enabled) {
+				// Turning this on indexes nothing. Update does that when asked.
+				solNative.setSearchFolders(toJS(store.searchFolders));
+				return;
+			}
+			const finish = startFileIndexWalk();
+			void solNative.clearFileIndex().finally(finish);
 		},
 
 		setSearchEngine: (engine: SearchEngine) => {
@@ -1361,9 +1391,12 @@ export const createUIStore = (root: IRootStore) => {
 			store.showUpcomingEvent && store.calendarEnabled,
 		);
 
-		if (store.searchFolders.length > 0) {
-			const finish = startFileIndexWalk();
-			void solNative.setSearchFolders(toJS(store.searchFolders)).finally(finish);
+		// Records the folders only. Launch never indexes. Off is cleared here
+		// too, so a settings file edited while Sol was closed still means off.
+		if (!store.fileSearchEnabled) {
+			void solNative.clearFileIndex();
+		} else if (store.searchFolders.length > 0) {
+			solNative.setSearchFolders(toJS(store.searchFolders));
 		}
 	});
 

@@ -11,27 +11,42 @@ struct IndexedFile {
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1 as Int, to: sqlite3_destructor_type?.self)
 
+// What macOS reported during one replay. The stream callback fills it on
+// replayQueue, and the walk queue reads it only after the stream has stopped.
+private final class ReplayLog {
+  var flagsByPath: [String: FSEventStreamEventFlags] = [:]
+  var rescans = Set<String>()
+  var latestEvent: FSEventStreamEventId?
+  var idsWrapped = false
+  let historyDone = DispatchSemaphore(value: 0)
+}
+
+// A search folder as stored, and as FSEvents names it after resolving links.
+private struct FolderRoot {
+  let stored: String
+  let real: String
+}
+
+// How long macOS gets to read back its log before update rebuilds instead.
+private let replayTimeout: DispatchTimeInterval = .seconds(60)
+private let replaySettle: TimeInterval = 1
+
 final class FileIndex {
   private let walkQueue = DispatchQueue(label: "com.ospfranco.sol.fileindex.walk")
-  private let eventQueue = DispatchQueue(label: "com.ospfranco.sol.fileindex.events")
+  private let replayQueue = DispatchQueue(label: "com.ospfranco.sol.fileindex.replay")
+  private let databasePath: String
   private let readLock = NSLock()
   private var writeDB: OpaquePointer?
   // Walks write on writeDB. Search uses readDB so a query can return while a
   // walk transaction is open. WAL is what makes that legal.
   private var readDB: OpaquePointer?
   private var searchFolders: [String] = []
-  private var eventStream: FSEventStreamRef?
 
   init(databaseURL: URL) {
     let directory = databaseURL.deletingLastPathComponent()
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let path = databaseURL.path
-    writeDB = openDatabase(path: path)
-    createSchema()
-    readDB = openDatabase(path: path)
-    if let readDB {
-      sqlite3_exec(readDB, "PRAGMA query_only=ON;", nil, nil, nil)
-    }
+    databasePath = databaseURL.path
+    openDatabases()
     searchFolders = Array(recordedFolders())
   }
 
@@ -44,45 +59,110 @@ final class FileIndex {
     return URL(fileURLWithPath: dbPath)
   }
 
-  func setSearchFolders(_ paths: [String], completion: @escaping () -> Void) {
+  // Launch calls this. It must stay free of walks and watchers: Sol does no
+  // indexing unless Adrian asks for it, and an idle launcher costs nothing.
+  func setSearchFolders(_ paths: [String]) {
     let folders = normalizeAll(paths)
+    readLock.lock()
+    searchFolders = folders
+    readLock.unlock()
+  }
+
+  // Sol does not watch files. macOS keeps its own log of changes, so update
+  // reads back only what happened since the last update. It rebuilds when
+  // there is no checkpoint or the log cannot be replayed.
+  func update(completion: @escaping () -> Void) {
+    walkQueue.async { [weak self] in
+      guard let self else {
+        completion()
+        return
+      }
+      let folders = self.currentFolders()
+      if folders.isEmpty {
+        completion()
+        return
+      }
+      // Folders dropped by editing the settings file never reach
+      // removeSearchFolder, and a folder that is gone sends no reliable event.
+      for folder in self.recordedFolders() where !folders.contains(folder) {
+        self.dropFolder(folder, remaining: folders)
+      }
+      for folder in folders where !FileManager.default.fileExists(atPath: folder) {
+        self.deleteTree(folder)
+      }
+      if let since = self.checkpoint(),
+        self.savedLogID() == self.eventLogID(folders),
+        !self.hasUnfilledClocks(),
+        self.replay(since: since, folders: folders)
+      {
+        let recorded = self.recordedFolders()
+        for folder in folders where !recorded.contains(folder) {
+          self.walk(folder)
+          self.recordFolder(folder)
+        }
+      } else {
+        self.rebuild(folders)
+      }
+      completion()
+    }
+  }
+
+  // Reachable from tests because macOS cannot be made to drop events on cue.
+  func rescan(eventPath: String, completion: @escaping () -> Void) {
+    walkQueue.async { [weak self] in
+      guard let self else {
+        completion()
+        return
+      }
+      let folders = self.currentFolders()
+      self.rescanAll(eventPath: eventPath, folders: folders, roots: self.folderRoots(folders))
+      completion()
+    }
+  }
+
+  func addSearchFolder(_ path: String, completion: @escaping () -> Void) {
+    let folder = normalize(path)
     walkQueue.async { [weak self] in
       guard let self else {
         completion()
         return
       }
       self.readLock.lock()
-      self.searchFolders = folders
-      self.readLock.unlock()
-      self.startWatching(folders)
-      let recorded = self.recordedFolders()
-      if !self.hasRows() {
-        for folder in folders {
-          self.walk(folder)
-        }
-        self.replaceRecordedFolders(folders)
-      } else if self.hasUnfilledClocks() {
-        // Rows from before clocks and place names existed have a null
-        // clock_text. Walk once to fill them. A later launch sees real
-        // clock text and only watches. Rows this walk does not visit are
-        // marked empty so a leftover path cannot force another walk.
-        for folder in folders {
-          self.walk(folder)
-        }
-        self.exec(self.writeDB, "UPDATE files SET clock_text = '' WHERE clock_text IS NULL;")
-        self.exec(self.writeDB, "UPDATE files SET place_name = '' WHERE place_name IS NULL;")
-        self.replaceRecordedFolders(folders)
-      } else if recorded.isEmpty {
-        // Files are already stored, but this database has no record of which
-        // search folders were walked. That is an index from before this
-        // module. Watch it. Walking here would redo the user's index.
-        self.replaceRecordedFolders(folders)
-      } else {
-        for folder in folders where !recorded.contains(folder) {
-          self.walk(folder)
-          self.recordFolder(folder)
-        }
+      if !self.searchFolders.contains(folder) {
+        self.searchFolders.append(folder)
       }
+      self.readLock.unlock()
+      // An index with no rows has nothing older to catch up on, so this walk
+      // can start its log. A populated index without a checkpoint keeps
+      // having none, and the next update rebuilds it.
+      if self.checkpoint() == nil && !self.hasRows() {
+        self.saveCheckpoint(FSEventsGetCurrentEventId())
+        self.saveLogID(self.eventLogID(self.currentFolders()))
+      }
+      self.walk(folder)
+      self.recordFolder(folder)
+      completion()
+    }
+  }
+
+  // The off switch. Removes the files rather than emptying the tables, so
+  // turning File search off gives the disk space back at once.
+  func clear(completion: @escaping () -> Void) {
+    walkQueue.async { [weak self] in
+      guard let self else {
+        completion()
+        return
+      }
+      self.readLock.lock()
+      defer { self.readLock.unlock() }
+      sqlite3_close(self.readDB)
+      sqlite3_close(self.writeDB)
+      self.readDB = nil
+      self.writeDB = nil
+      for suffix in ["", "-wal", "-shm"] {
+        try? FileManager.default.removeItem(atPath: self.databasePath + suffix)
+      }
+      self.openDatabases()
       completion()
     }
   }
@@ -124,21 +204,6 @@ final class FileIndex {
     return results.map(\.file)
   }
 
-  func reindex(completion: @escaping () -> Void) {
-    walkQueue.async { [weak self] in
-      guard let self else {
-        completion()
-        return
-      }
-      self.exec(self.writeDB, "DELETE FROM files;")
-      for folder in self.searchFolders {
-        self.walk(folder)
-      }
-      self.replaceRecordedFolders(self.searchFolders)
-      completion()
-    }
-  }
-
   func removeSearchFolder(_ path: String, completion: @escaping () -> Void) {
     let folder = normalize(path)
     walkQueue.async { [weak self] in
@@ -150,21 +215,33 @@ final class FileIndex {
       self.searchFolders.removeAll { $0 == folder }
       let remaining = self.searchFolders
       self.readLock.unlock()
-      self.deleteTree(folder)
-      self.forgetFolder(folder)
-      self.startWatching(remaining)
+      self.dropFolder(folder, remaining: remaining)
       completion()
     }
   }
 
   deinit {
-    stopWatching()
     if let writeDB {
       sqlite3_close(writeDB)
     }
     if let readDB {
       sqlite3_close(readDB)
     }
+  }
+
+  private func openDatabases() {
+    writeDB = openDatabase(path: databasePath)
+    createSchema()
+    readDB = openDatabase(path: databasePath)
+    if let readDB {
+      sqlite3_exec(readDB, "PRAGMA query_only=ON;", nil, nil, nil)
+    }
+  }
+
+  private func currentFolders() -> [String] {
+    readLock.lock()
+    defer { readLock.unlock() }
+    return searchFolders
   }
 
   private func openDatabase(path: String) -> OpaquePointer? {
@@ -197,6 +274,10 @@ final class FileIndex {
       CREATE TABLE IF NOT EXISTS search_folders (
         path TEXT PRIMARY KEY
       );
+      CREATE TABLE IF NOT EXISTS index_state (
+        key TEXT PRIMARY KEY,
+        value INTEGER NOT NULL
+      );
     """
     exec(writeDB, sql)
     // An index created before clocks existed keeps its rows. New columns
@@ -209,6 +290,93 @@ final class FileIndex {
 
   private func exec(_ db: OpaquePointer?, _ sql: String) {
     sqlite3_exec(db, sql, nil, nil, nil)
+  }
+
+  private func checkpoint() -> FSEventStreamEventId? {
+    guard let db = writeDB else { return nil }
+    var statement: OpaquePointer?
+    let sql = "SELECT value FROM index_state WHERE key = 'checkpoint';"
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return nil
+    }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+    return FSEventStreamEventId(bitPattern: sqlite3_column_int64(statement, 0))
+  }
+
+  private func saveCheckpoint(_ event: FSEventStreamEventId) {
+    guard let db = writeDB else { return }
+    var statement: OpaquePointer?
+    let sql = "INSERT OR REPLACE INTO index_state (key, value) VALUES ('checkpoint', ?);"
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return
+    }
+    sqlite3_bind_int64(statement, 1, Int64(bitPattern: event))
+    sqlite3_step(statement)
+    sqlite3_finalize(statement)
+  }
+
+  private func savedLogID() -> String? {
+    guard let db = writeDB else { return nil }
+    var statement: OpaquePointer?
+    let sql = "SELECT value FROM index_state WHERE key = 'log_id';"
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return nil
+    }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW,
+      let text = sqlite3_column_text(statement, 0)
+    else { return nil }
+    return String(cString: text)
+  }
+
+  private func saveLogID(_ id: String) {
+    guard let db = writeDB else { return }
+    var statement: OpaquePointer?
+    let sql = "INSERT OR REPLACE INTO index_state (key, value) VALUES ('log_id', ?);"
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+      return
+    }
+    sqlite3_bind_text(statement, 1, id, -1, SQLITE_TRANSIENT)
+    sqlite3_step(statement)
+    sqlite3_finalize(statement)
+  }
+
+  // Event ids only mean something inside one macOS log. A reset log looks
+  // like a quiet replay, so its identity is stored beside the checkpoint.
+  private func eventLogID(_ folders: [String]) -> String {
+    var ids = Set<String>()
+    for folder in folders {
+      var current = folder
+      var info = stat()
+      while stat(current, &info) != 0 && current != "/" {
+        current = (current as NSString).deletingLastPathComponent
+      }
+      if let uuid = FSEventsCopyUUIDForDevice(info.st_dev),
+        let text = CFUUIDCreateString(nil, uuid)
+      {
+        ids.insert(text as String)
+      }
+    }
+    return ids.sorted().joined(separator: ",")
+  }
+
+  private func rebuild(_ folders: [String]) {
+    // Taken before the walk, so a change made during it replays next time
+    // instead of being lost.
+    let start = FSEventsGetCurrentEventId()
+    // Goes first. If Sol quits mid-walk, the next update must rebuild rather
+    // than replay onto a partial index.
+    exec(writeDB, "DELETE FROM index_state;")
+    exec(writeDB, "DELETE FROM files;")
+    for folder in folders {
+      walk(folder)
+    }
+    replaceRecordedFolders(folders)
+    saveCheckpoint(start)
+    saveLogID(eventLogID(folders))
+    exec(writeDB, "VACUUM;")
+    exec(writeDB, "PRAGMA wal_checkpoint(TRUNCATE);")
   }
 
   private func hasRows() -> Bool {
@@ -282,18 +450,31 @@ final class FileIndex {
     sqlite3_finalize(statement)
   }
 
+  // A range on the primary key, because a LIKE reads every row. '0' is the
+  // byte after '/', so the range is exactly the paths inside the folder.
+  static let deleteTreeSQL = "DELETE FROM files WHERE path = ?1 OR (path >= ?2 AND path < ?3);"
+
   private func deleteTree(_ folder: String) {
     guard let db = writeDB else { return }
-    let sql = "DELETE FROM files WHERE path = ? OR path LIKE ? ESCAPE '\\';"
     var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+    guard sqlite3_prepare_v2(db, FileIndex.deleteTreeSQL, -1, &statement, nil) == SQLITE_OK else {
       return
     }
     sqlite3_bind_text(statement, 1, folder, -1, SQLITE_TRANSIENT)
-    let pattern = escapeLike(folder) + "/%"
-    sqlite3_bind_text(statement, 2, pattern, -1, SQLITE_TRANSIENT)
+    sqlite3_bind_text(statement, 2, folder + "/", -1, SQLITE_TRANSIENT)
+    sqlite3_bind_text(statement, 3, folder + "0", -1, SQLITE_TRANSIENT)
     sqlite3_step(statement)
     sqlite3_finalize(statement)
+  }
+
+  private func dropFolder(_ folder: String, remaining: [String]) {
+    deleteTree(folder)
+    forgetFolder(folder)
+    // Search folders can nest, so that delete may have taken rows another
+    // folder still covers. No later event would bring them back.
+    for other in remaining where folder.hasPrefix(other + "/") || other.hasPrefix(folder + "/") {
+      walk(other)
+    }
   }
 
   private func walk(_ root: String) {
@@ -375,12 +556,20 @@ final class FileIndex {
     return info.isPackage
   }
 
-  private func eventIsOmitted(_ path: String) -> Bool {
-    let url = URL(fileURLWithPath: path)
-    if url.pathComponents.contains("node_modules") {
+  // Answers from the path alone, with no disk or database work. A build or a
+  // git command writes thousands of these, and none can ever have a row.
+  private func isNeverStored(_ path: String, folders: [String]) -> Bool {
+    guard let root = innermostSearchRoot(containing: path, roots: folders) else {
       return true
     }
-    let roots = Set(searchFolders)
+    return path.dropFirst(root.count).split(separator: "/").contains {
+      $0.hasPrefix(".") || $0 == "node_modules"
+    }
+  }
+
+  private func eventIsOmitted(_ path: String, folders: [String]) -> Bool {
+    let url = URL(fileURLWithPath: path)
+    let roots = Set(folders)
     var current = url
     while true {
       if roots.contains(current.path) {
@@ -440,88 +629,235 @@ final class FileIndex {
     sqlite3_step(statement)
   }
 
-  private func startWatching(_ paths: [String]) {
-    stopWatching()
-    guard !paths.isEmpty else { return }
-
-    let pathsCF = paths as CFArray
+  // Reads back what macOS logged since `since`, then applies it. Returns false
+  // when the log cannot be trusted, and the caller rebuilds.
+  private func replay(since: FSEventStreamEventId, folders: [String]) -> Bool {
+    let log = ReplayLog()
+    // Taken before reading, so a quiet folder's checkpoint still moves and
+    // later replays do not lean on ever older macOS history.
+    let start = FSEventsGetCurrentEventId()
+    let roots = folderRoots(folders)
     var context = FSEventStreamContext(
       version: 0,
-      info: Unmanaged.passUnretained(self).toOpaque(),
+      info: Unmanaged.passUnretained(log).toOpaque(),
       retain: nil,
       release: nil,
       copyDescription: nil
     )
-
-    // Coalesce a burst of changes. kFSEventStreamCreateFlagNoDefer ignores
-    // this latency on local disks, so leave it off.
     let flags = FSEventStreamCreateFlags(
       kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes
     )
     guard let stream = FSEventStreamCreate(
       kCFAllocatorDefault,
-      { _, info, numEvents, eventPaths, eventFlags, _ in
+      { _, info, numEvents, eventPaths, eventFlags, eventIds in
         guard let info else { return }
-        let index = Unmanaged<FileIndex>.fromOpaque(info).takeUnretainedValue()
+        let log = Unmanaged<ReplayLog>.fromOpaque(info).takeUnretainedValue()
         let cfPaths = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as NSArray
         guard let paths = cfPaths as? [String] else { return }
-        let flags = Array(UnsafeBufferPointer(start: eventFlags, count: numEvents))
-        index.handleEvents(paths: paths, flags: flags)
+        for index in 0..<min(numEvents, paths.count) {
+          FileIndex.record(paths[index], flags: eventFlags[index], id: eventIds[index], in: log)
+        }
       },
       &context,
-      pathsCF,
-      FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-      0.5,
+      roots.map(\.real) as CFArray,
+      since,
+      0,
       flags
-    ) else { return }
+    ) else { return false }
 
-    eventStream = stream
-    FSEventStreamSetDispatchQueue(stream, eventQueue)
-    FSEventStreamStart(stream)
-  }
-
-  private func stopWatching() {
-    guard let stream = eventStream else { return }
+    FSEventStreamSetDispatchQueue(stream, replayQueue)
+    guard FSEventStreamStart(stream) else {
+      FSEventStreamInvalidate(stream)
+      FSEventStreamRelease(stream)
+      return false
+    }
+    let finished = log.historyDone.wait(timeout: .now() + replayTimeout) == .success
+    if finished {
+      // macOS can report the end of its history while a change from a moment
+      // ago is still in transit, and FlushSync alone does not wait for it.
+      // Update is a rare, manual action, so a short wait costs nothing.
+      Thread.sleep(forTimeInterval: replaySettle)
+      FSEventStreamFlushSync(stream)
+    }
     FSEventStreamStop(stream)
     FSEventStreamInvalidate(stream)
     FSEventStreamRelease(stream)
-    eventStream = nil
+    // Stop returned, but a callback can still be queued. This waits it out.
+    replayQueue.sync {}
+
+    if !finished || log.idsWrapped {
+      return false
+    }
+    apply(log, folders: folders, roots: roots)
+    saveCheckpoint(max(start, log.latestEvent ?? 0))
+    return true
   }
 
-  private func handleEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
-    walkQueue.async { [weak self] in
-      guard let self else { return }
-      for (path, flag) in zip(paths, flags) {
-        self.applyEvent(path: path, flags: flag)
+  private static func record(
+    _ path: String,
+    flags: FSEventStreamEventFlags,
+    id: FSEventStreamEventId,
+    in log: ReplayLog
+  ) {
+    func has(_ flag: Int) -> Bool {
+      flags & FSEventStreamEventFlags(flag) != 0
+    }
+    if has(kFSEventStreamEventFlagHistoryDone) {
+      log.historyDone.signal()
+      return
+    }
+    if has(kFSEventStreamEventFlagEventIdsWrapped) {
+      log.idsWrapped = true
+      return
+    }
+    log.latestEvent = max(log.latestEvent ?? 0, id)
+    if has(kFSEventStreamEventFlagMustScanSubDirs)
+      || has(kFSEventStreamEventFlagUserDropped)
+      || has(kFSEventStreamEventFlagKernelDropped)
+    {
+      log.rescans.insert(path)
+      return
+    }
+    // Keyed by path because a replay merges days of changes. The disk says
+    // what is true now, so only the union of what happened matters.
+    log.flagsByPath[path, default: 0] |= flags
+  }
+
+  private func apply(_ log: ReplayLog, folders: [String], roots: [FolderRoot]) {
+    var arrivedFolders: [String] = []
+    // One transaction, so a replay of many changes is one disk write.
+    exec(writeDB, "BEGIN IMMEDIATE;")
+    for (eventPath, flags) in log.flagsByPath {
+      let path = storedPath(fromEvent: eventPath, roots: roots)
+      if applyEvent(path: path, flags: flags, folders: folders) {
+        arrivedFolders.append(path)
       }
+    }
+    exec(writeDB, "COMMIT;")
+    // Rescans open their own transactions, so these wait for the commit.
+    for folder in arrivedFolders {
+      rescan(folder, folders: folders)
+    }
+    for eventPath in log.rescans {
+      rescanAll(eventPath: eventPath, folders: folders, roots: roots)
     }
   }
 
-  private func applyEvent(path: String, flags: FSEventStreamEventFlags) {
-    let removed = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved) != 0
-    let renamed = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed) != 0
-    let fileManager = FileManager.default
-    if removed || (renamed && !fileManager.fileExists(atPath: path)) {
+  // macOS can report a drop at a parent of the search folders, even at /.
+  // That covers every search folder under it.
+  private func rescanAll(eventPath: String, folders: [String], roots: [FolderRoot]) {
+    let prefix = eventPath.hasSuffix("/") ? eventPath : eventPath + "/"
+    let below = roots.filter { $0.real.hasPrefix(prefix) || $0.stored.hasPrefix(prefix) }
+    if !below.isEmpty {
+      for root in below {
+        rescan(root.stored, folders: folders)
+      }
+      return
+    }
+    rescan(storedPath(fromEvent: eventPath, roots: roots), folders: folders)
+  }
+
+  private func rescan(_ path: String, folders: [String]) {
+    if isNeverStored(path, folders: folders) {
+      return
+    }
+    guard FileManager.default.fileExists(atPath: path) else {
       deleteTree(path)
       return
     }
-    guard fileManager.fileExists(atPath: path) else { return }
-    if eventIsOmitted(path) {
+    if folders.contains(path) {
       deleteTree(path)
+      walk(path)
       return
     }
     let name = (path as NSString).lastPathComponent
     let info = inspect(path)
-    if shouldSkip(name: name, info: info) {
+    if eventIsOmitted(path, folders: folders) || shouldSkip(name: name, info: info) {
       deleteTree(path)
       return
     }
-    let parent = (path as NSString).deletingLastPathComponent
-    upsert(path: path, name: name, isFolder: info.isDirectory, parent: parent)
-    let created = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated) != 0
-    if created && info.isDirectory {
+    // Delete first: a folder swapped in at this path must not keep the old
+    // folder's children. A walk stores what is inside, never the folder.
+    deleteTree(path)
+    upsert(
+      path: path,
+      name: name,
+      isFolder: info.isDirectory,
+      parent: (path as NSString).deletingLastPathComponent
+    )
+    if info.isDirectory {
       walk(path)
     }
+  }
+
+  // Returns true when the path is a folder that just arrived, so its contents
+  // need a walk. FSEvents reports only the folder when one is moved in.
+  private func applyEvent(path: String, flags: FSEventStreamEventFlags, folders: [String]) -> Bool {
+    if isNeverStored(path, folders: folders) {
+      return false
+    }
+    let arrived = FSEventStreamEventFlags(
+      kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRenamed
+    )
+    // Trust the disk over the flags. Merged events on a saved file carry both
+    // removed and created, and that file still exists.
+    guard FileManager.default.fileExists(atPath: path) else {
+      deleteTree(path)
+      return false
+    }
+    if folders.contains(path) {
+      return flags & arrived != 0
+    }
+    let name = (path as NSString).lastPathComponent
+    let info = inspect(path)
+    if eventIsOmitted(path, folders: folders) || shouldSkip(name: name, info: info) {
+      deleteTree(path)
+      return false
+    }
+    let parent = (path as NSString).deletingLastPathComponent
+    upsert(path: path, name: name, isFolder: info.isDirectory, parent: parent)
+    return flags & arrived != 0 && info.isDirectory
+  }
+
+  private func folderRoots(_ folders: [String]) -> [FolderRoot] {
+    folders
+      .map { FolderRoot(stored: $0, real: realPath($0)) }
+      .sorted { $0.real.count > $1.real.count }
+  }
+
+  // A search folder that is gone still needs a real path, so this resolves
+  // the deepest part that exists and keeps the rest.
+  private func realPath(_ path: String) -> String {
+    var current = path
+    var rest: [String] = []
+    while current != "/" {
+      if let resolved = realpath(current, nil) {
+        defer { free(resolved) }
+        return ([String(cString: resolved)] + rest).joined(separator: "/")
+      }
+      rest.insert((current as NSString).lastPathComponent, at: 0)
+      current = (current as NSString).deletingLastPathComponent
+    }
+    return path
+  }
+
+  // FSEvents names real paths, and rows store the path as configured. A
+  // symlinked search folder or /var (really /private/var) differs between the
+  // two, and normalize cannot help because it only works on paths that exist.
+  private func storedPath(fromEvent eventPath: String, roots: [FolderRoot]) -> String {
+    var path = eventPath
+    if path.count > 1 && path.hasSuffix("/") {
+      path.removeLast()
+    }
+    for root in roots {
+      if path == root.real {
+        return root.stored
+      }
+      if path.hasPrefix(root.real + "/") {
+        return root.stored + path.dropFirst(root.real.count)
+      }
+    }
+    return path
   }
 
   private func normalize(_ path: String) -> String {
