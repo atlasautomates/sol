@@ -38,21 +38,34 @@ export function readAmount(text: string): number | null {
 	return Number.isFinite(value) ? value : null;
 }
 
-// convert-units' factors carry about six significant digits (453.592 g per
-// pound, 3.28084 ft per metre), so more digits than that are noise: 5 ft is
-// 152.399995 cm to convert-units. Digits left of the decimal point are kept,
-// so a large whole number is never rounded.
-const CONVERTED_VALUE_SIGNIFICANT_DIGITS = 6;
+// How many digits a converted value shows. A value of 1 or more shows up to
+// six decimals, and a smaller one six significant digits. Either way it keeps
+// at least as many significant digits as the amount typed (1.0000001 kg is
+// 1000.0001 g), and at most 12, which hides float noise (0.3 cm is
+// 3.0000000000000004 mm in floating point). Whole digits are never rounded.
+export const SHOWN_DIGITS = 6;
+const MAX_SIGNIFICANT_DIGITS = 12;
 
-export function formatConvertedValue(value: number) {
-	if (!Number.isFinite(value) || value === 0) {
+export function formatConvertedValue(value: number, typedDigits = 1) {
+	if (value === 0) {
+		return "0";
+	}
+	if (!Number.isFinite(value)) {
 		return value.toString();
 	}
 
 	const wholeDigits = Math.floor(Math.log10(Math.abs(value))) + 1;
+	const shown = Math.max(SHOWN_DIGITS + Math.max(wholeDigits, 0), typedDigits);
 	const digits = Math.min(
+		shown,
+		Math.max(MAX_SIGNIFICANT_DIGITS, wholeDigits),
 		100,
-		Math.max(CONVERTED_VALUE_SIGNIFICANT_DIGITS, wholeDigits),
 	);
 	return Number(value.toPrecision(digits)).toString();
+}
+
+// The significant digits in an amount as typed: 3 for 0.000123, 8 for
+// 1.0000001, 4 for 1,500.
+export function typedDigits(amountText: string) {
+	return Math.max(1, amountText.replace(/\D/g, "").replace(/^0+/, "").length);
 }
