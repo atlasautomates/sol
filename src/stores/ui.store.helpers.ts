@@ -1,5 +1,4 @@
 import * as chrono from "chrono-node";
-import axios from "axios";
 import convert from "convert-units";
 import { DateTime } from "luxon";
 
@@ -31,8 +30,6 @@ export type BookmarkNode = {
 	url?: string;
 	children?: BookmarkNode[];
 };
-
-const EXPRESSION_RESULT_DECIMALS = 12;
 
 const TIMEZONE_ABBREVIATION_OFFSETS: Record<string, number> = {
 	UTC: 0,
@@ -391,30 +388,45 @@ function parseFlightTemporaryResultFromSnippets(
 	};
 }
 
+const SEARCH_PAGE_TIMEOUT_MS = 6000;
+const SEARCH_PAGE_USER_AGENT =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+// GET a search results page as text. Rejects on a non-2xx status or after
+// SEARCH_PAGE_TIMEOUT_MS, as the axios call it replaced did.
+async function fetchSearchPage(
+	url: string,
+	params: Record<string, string>,
+): Promise<string> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), SEARCH_PAGE_TIMEOUT_MS);
+	try {
+		const response = await fetch(`${url}?${new URLSearchParams(params)}`, {
+			headers: { "User-Agent": SEARCH_PAGE_USER_AGENT },
+			signal: controller.signal,
+		});
+		if (!response.ok) {
+			throw new Error(`${url} answered ${response.status}`);
+		}
+		return await response.text();
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export async function fetchFlightInfoFromWeb(
 	flightIdentifier: string,
 ): Promise<TemporaryResult | null> {
 	const searchQuery = `${flightIdentifier} flight status gate terminal departure time`;
-	const requestConfig = {
-		headers: {
-			"User-Agent":
-				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-		},
-		timeout: 6000,
-	};
 
 	let ddgError: unknown;
 	try {
-		const ddgResponse = await axios.get<string>(
-			"https://duckduckgo.com/html/",
-			{
-				...requestConfig,
-				params: { q: searchQuery },
-			},
-		);
+		const ddgHtml = await fetchSearchPage("https://duckduckgo.com/html/", {
+			q: searchQuery,
+		});
 		const ddgResult = parseFlightTemporaryResultFromSnippets(
 			flightIdentifier,
-			extractFlightSnippetsFromHtml(ddgResponse.data, "ddg"),
+			extractFlightSnippetsFromHtml(ddgHtml, "ddg"),
 		);
 		if (ddgResult != null) {
 			return ddgResult;
@@ -425,16 +437,13 @@ export async function fetchFlightInfoFromWeb(
 
 	let googleError: unknown;
 	try {
-		const googleResponse = await axios.get<string>(
-			"https://www.google.com/search",
-			{
-				...requestConfig,
-				params: { q: searchQuery, hl: "en" },
-			},
-		);
+		const googleHtml = await fetchSearchPage("https://www.google.com/search", {
+			q: searchQuery,
+			hl: "en",
+		});
 		const googleResult = parseFlightTemporaryResultFromSnippets(
 			flightIdentifier,
-			extractFlightSnippetsFromHtml(googleResponse.data, "google"),
+			extractFlightSnippetsFromHtml(googleHtml, "google"),
 		);
 		if (googleResult != null) {
 			return googleResult;
@@ -485,30 +494,4 @@ export function formatTemporaryResultForClipboard(result: TemporaryResult) {
 
 	const details = parts.join(" | ");
 	return details ? `${result.flight} | ${details}` : result.flight;
-}
-
-export function normalizeCalculatorQuery(query: string): string {
-	return query
-		.replace(
-			/(\d{1,3}(?:\.\d{3})+),(\d+)/g,
-			(_, whole: string, fraction: string) =>
-				`${whole.replace(/\./g, "")}.${fraction}`,
-		)
-		.replace(/(\d),(\d)/g, "$1.$2");
-}
-
-export function formatExpressionResult(value: number, query = "") {
-	if (!Number.isFinite(value)) {
-		return value.toString();
-	}
-
-	const scale = 10 ** EXPRESSION_RESULT_DECIMALS;
-	const rounded = Math.round((value + Number.EPSILON) * scale) / scale;
-	const text = rounded.toString();
-
-	if (/\d,\d/.test(query)) {
-		return text.replace(".", ",");
-	}
-
-	return text;
 }
