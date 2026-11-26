@@ -34,3 +34,13 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents
 - Merge only with `scripts/merge-pr.sh <pr>`. It refuses unless every check on the PR's head is green. It also refuses an unreviewed PR (`reviewer: n/a` or `pending`) without the `trivial` label, and a self-review (the reviewer's model id equals the author's).
 - Each clone arms the push guard once: `git config core.hooksPath .githooks`. The `pre-push` hook refuses any push to `main` and runs the JS tests first, unless every changed file is on the allowlist.
 - This repo has no self-hosted runner, and must never get one while it is public: a fork PR runs the workflow from its own head and could target it. If the repo ever goes private and gains one, remove the runner before making the repo public again.
+
+### Security
+
+- `security.yml` runs on every PR and every push to `main`: `guard-secrets` runs gitleaks over the full git history, and `guard-workflows` runs zizmor over `.github/workflows/`.
+- `dependencies.yml` runs osv-scanner over `bun.lock` and `Gemfile.lock`: `guard-deps` on every PR (the vulnerabilities the PR introduces), `guard-deps-all` on `main` and weekly (every known one). osv-scanner cannot read `macos/Podfile.lock`; Dependabot covers CocoaPods.
+- Dependabot alerts and security updates are on; Dependabot opens the fix PRs. Each one still gets a review and the attribution block before `scripts/merge-pr.sh`, and is never `trivial`.
+- `scripts/check-action-runtimes.sh` (the last step of `guard-workflows`) fails any workflow action whose `action.yml` at its pinned ref declares `node20` or older. Bumping an action means changing the SHA and its `# vX.Y.Z` comment together.
+- Actions settings allow only GitHub-owned actions plus `zizmorcore/zizmor-action@*`, `google/osv-scanner-action/*`, `oven-sh/setup-bun@*` and `ruby/setup-ruby@*`, and require SHA pinning. A new third-party action must be added to that list, SHA-pinned, or GitHub refuses the workflow at startup.
+- No literal in the shape of a known credential is committed, even a fake one. A test that needs the shape builds it at runtime; an unavoidable one carries `# gitleaks:allow` and says what it is.
+- A red `guard-*` check is a security finding. Fix it, or suppress that one finding where its tool records suppressions: `.gitleaksignore` (only after rotating the secret; the comment describes the shape, never the value), `# zizmor: ignore[rule]` with a reason, or `osv-scanner.toml` beside the lockfile with `reason` and `ignoreUntil`. Never weaken the guard. Each suppression is reviewed and never `trivial`.

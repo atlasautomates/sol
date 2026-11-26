@@ -1,0 +1,104 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# bash with pipefail: a failing tool inside `cmd | tee log` turns the step red, not green.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing is granted by default; each job declares exactly what it reads.
+permissions: {}
+
+# Every action below is pinned to a commit SHA, never a tag: in March 2026 Trivy's action tags
+# were force-pushed to credential-stealing commits (GHSA-69fq-xp46-6x23). A SHA cannot be moved.
+# Check names start with `guard-` on purpose: scripts/merge-pr.sh routes on that prefix.
+jobs:
+  # Secrets: gitleaks (MIT) over the whole git history, so a secret committed and later deleted
+  # is still found. The binary comes straight from the release, pinned by version and checked
+  # against the release's SHA-256; no action wrapper (gitleaks-action is under a proprietary EULA).
+  guard-secrets:
+    name: guard-secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history, not just the PR head
+          persist-credentials: false
+      - name: Refuse a repo-level gitleaks config
+        # gitleaks auto-loads .gitleaks.toml from the repo it scans, so one added file could
+        # allowlist everything and turn this guard green with no workflow edit. Findings are
+        # suppressed one at a time in .gitleaksignore (after rotation); the ruleset stays here.
+        run: |
+          if [ -e .gitleaks.toml ]; then
+            echo "::error file=.gitleaks.toml::A repo-level gitleaks config would override this guard; remove it."
+            exit 1
+          fi
+      - name: Install gitleaks (version and checksum pinned)
+        env:
+          V: 8.30.1
+          SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz"
+          echo "${SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Scan the full history
+        # --redact keeps the secret itself out of the log; the SARIF report is the triage input.
+        run: gitleaks git . --no-banner --redact --exit-code 1 --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif"
+      - name: Keep the report when something was found
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gitleaks-report
+          path: ${{ runner.temp }}/gitleaks.sarif
+          retention-days: 14
+
+  # Workflow files: zizmor audits .github/workflows for template injection, excessive
+  # permissions, unpinned or known-vulnerable actions, cache poisoning, leaked credentials in
+  # artifacts. The Trivy incident is the class of bug it exists for. zizmor's exit code (11-14
+  # on findings) fails the step; its default persona flags a tag-pinned action as High
+  # `unpinned-uses` (1.32.0, Weekling PR #17) and passes the setup-ci templates.
+  guard-workflows:
+    name: guard-workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse a repo-level zizmor config
+        # zizmor auto-loads zizmor.yml or .github/zizmor.yml, which can disable audits wholesale.
+        # A false positive is suppressed at its span with `# zizmor: ignore[rule]` instead.
+        run: |
+          for f in zizmor.yml .zizmor.yml .github/zizmor.yml; do
+            if [ -e "$f" ]; then
+              echo "::error file=$f::A repo-level zizmor config would override this guard; remove it."
+              exit 1
+            fi
+          done
+      - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          version: 1.32.0 # installed from the action's hash-locked wheel for this version
+          advanced-security: false # the Code Scanning tab is paid on private repos
+          annotations: true # findings land on the PR; the first ten render, all are logged
+      # A node20 declaration is a defect even though it runs today; the script's header says why
+      # and what it skips. !cancelled() so a zizmor finding and a stale runtime show in one run.
+      - name: Refuse an action that declares a retired Node runtime
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/check-action-runtimes.sh

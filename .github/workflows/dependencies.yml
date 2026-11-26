@@ -1,0 +1,64 @@
+name: Dependencies
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, off the hour: a CVE published against a dep we already have turns main red
+    # here, before Dependabot's PR arrives. Costs ~1 ubuntu-latest minute per week.
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: dependencies-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing is granted by default; each job declares exactly what the reusable workflow needs.
+permissions: {}
+
+# Both jobs call google/osv-scanner-action's reusable workflows (Apache-2.0), pinned to the
+# commit behind v2.7.0. A tag can be force-pushed (Trivy's were, March 2026); a commit SHA cannot.
+# Check names start with `guard-` on purpose: scripts/merge-pr.sh routes on that prefix.
+# upload-sarif is off: the Code Scanning tab needs GitHub Advanced Security on a private repo.
+# Findings still reach the PR as annotations, and the `new-json-results` artifact (5-day
+# retention) is the machine-readable input for triage.
+# This file is not written on Swift-only repos: osv-scanner cannot read Package.resolved, so
+# it would pass while blind. See setup-security's Dependabot-only branch.
+jobs:
+  # PR: only the vulnerabilities this branch introduces (scans base and head, reports the diff).
+  guard-deps:
+    name: guard-deps
+    if: github.event_name == 'pull_request'
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+    permissions:
+      actions: read # the reusable workflow reads its own run
+      contents: read # checkout
+      security-events: write # declared by the reusable workflow; unused with upload-sarif off
+    with:
+      # --allow-no-lockfiles: a repo whose first lockfile has not landed yet scans clean instead
+      # of crashing. Without it the PR job compares against a failed base scan and goes red on
+      # every PR; with it the guard ships early and arms itself when the first lockfile arrives.
+      scan-args: |-
+        --allow-no-lockfiles
+        -r
+        ./
+      upload-sarif: false
+      fail-on-vuln: true
+
+  # main + weekly: every known vulnerability in the current dependency set.
+  guard-deps-all:
+    name: guard-deps-all
+    if: github.event_name != 'pull_request'
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+    permissions:
+      actions: read # the reusable workflow reads its own run
+      contents: read # checkout
+      security-events: write # declared by the reusable workflow; unused with upload-sarif off
+    with:
+      # --allow-no-lockfiles: same reason as guard-deps above.
+      scan-args: |-
+        --allow-no-lockfiles
+        -r
+        ./
+      upload-sarif: false
+      fail-on-vuln: true
