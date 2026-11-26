@@ -11,7 +11,7 @@ defaults:
     shell: bash
 
 # Least privilege: the job only reads the repo. Stated here so a change to the repo-wide
-# default can never widen what a run on Adrian's Mac may do.
+# default can never widen what a self-hosted run may do.
 permissions:
   contents: read
 
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   test:
     name: build + tests
-    # Private repo: Adrian's Mac (self-hosted, label `xcode`), free and on the exact Xcode in use.
+    # Private repo: the owner's Mac (self-hosted, label `xcode`), free and on the exact Xcode in use.
     # Public repo: GitHub's Macs, free for public repos. This routing and the guard below are a
     # backstop only: a fork PR runs the workflow from its own head and can rewrite both. The real
     # protection is removing the self-hosted runner before the repo is made public (AGENTS.md).
@@ -36,8 +36,8 @@ jobs:
           echo "::error::This repo is public; self-hosted runners only serve private repos."
           exit 1
 
-      # Actions are pinned to full commit SHAs, never tags: a moved tag would run new code as
-      # Adrian on his Mac. The comment names the release; Dependabot or a deliberate bump updates both.
+      # Actions are pinned to full commit SHAs, never tags: a moved tag would run new code with
+      # whatever access the runner has. The comment names the release; Dependabot or a deliberate bump updates both.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing later needs the token; leaving it on disk lets a step or artifact carry it out.
@@ -99,6 +99,8 @@ jobs:
       - name: Bun
         if: steps.changes.outputs.run == 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0   # a new bun can reject the frozen lockfile; bump on purpose
 
       - name: Install JS dependencies
         id: bun
@@ -119,8 +121,8 @@ jobs:
           ruby-version: '3.2.8'   # mise.toml pins it
           bundler-cache: true     # bundle install from Gemfile.lock, cached
 
-      # Pods/ is not committed; Podfile.lock is. The cache only saves the downloads: `pod install`
-      # still runs and still checks the sandbox against Podfile.lock.
+      # Pods/ is not committed; Podfile.lock is. The cache restores the installed macos/Pods sandbox; `pod install`
+      # still runs and checks it against Podfile.lock.
       - name: Cache Pods
         if: steps.changes.outputs.run == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -137,7 +139,8 @@ jobs:
       # ---- Layers.
 
       - name: JS tests
-        if: ${{ !cancelled() && steps.changes.outputs.run == 'true' && steps.bun.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.changes.outputs.run == 'true' }}
+        # Imports only node: builtins and relative files, so it runs even if bun install failed.
         run: node --experimental-strip-types --test "src/**/*.test.ts"
 
       - name: File index acceptance (native)
