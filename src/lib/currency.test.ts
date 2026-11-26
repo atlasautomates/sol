@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-	type CachedRates,
 	type CurrencyRates,
 	createCurrencyRates,
 	lookupCurrencyConversion,
 	parseCurrencyConversion,
+	type RatesCache,
 } from "./currency.ts";
 
 const RATES: CurrencyRates = {
 	base: "EUR",
 	date: "2026-11-25",
-	rates: { USD: 1.25, GBP: 0.8, JPY: 160 },
+	rates: { EUR: 1, USD: 1.25, GBP: 0.8, JPY: 160, IDR: 20187.03, CHF: 0.95 },
 };
 
 const HOUR = 60 * 60 * 1000;
@@ -115,18 +115,53 @@ test("a long pasted query returns nothing, fast", async () => {
 	assert.equal(calls.fetches, 0);
 });
 
+test("amounts under a cent show three significant digits", () => {
+	converts([
+		["1 idr to eur", "1 IDR = 0.0000495 EUR"],
+		["100 idr to eur", "100 IDR = 0.00495 EUR"],
+		["1000 idr to eur", "1000 IDR = 0.05 EUR"],
+		["0 usd to eur", "0 USD = 0.00 EUR"],
+	]);
+	const result = parseCurrencyConversion("1 idr to eur", RATES);
+	assert.equal(
+		result?.kind === "comparison" ? result.footer : null,
+		"1 IDR = 0.0000495368 EUR · ECB rate of 2026-11-25",
+	);
+});
+
+test("amounts of a trillion or more are not converted", () => {
+	converts([
+		["999999999999 usd to eur", "999999999999 USD = 799999999999.20 EUR"],
+		["1000000000000 usd to eur", null],
+		["100000000000000000000000000 usd to jpy", null],
+	]);
+});
+
+test("currency words: dollars, euros, pounds, yen and francs", () => {
+	converts([
+		["5 dollars to euros", "5 USD = 4.00 EUR"],
+		["1 dollar in euro", "1 USD = 0.80 EUR"],
+		["10 pounds to usd", "10 GBP = 15.63 USD"],
+		["10 pound to €", "10 GBP = 12.50 EUR"],
+		["1001 yen to dollars", "1001 JPY = 7.82 USD"],
+		["10 francs to eur", "10 CHF = 10.53 EUR"],
+		["10 pounds to kg", null],
+		["10 dollars", null],
+	]);
+});
+
 // A fake rates source: an in-memory cache file and a scripted network.
 function fakeSource(options: {
 	cache?: unknown;
 	responses?: Array<unknown | Error>;
 	now?: number;
 }) {
-	const calls = { fetches: 0, writes: [] as CachedRates[] };
+	const calls = { fetches: 0, writes: [] as RatesCache[] };
 	const responses = [...(options.responses ?? [])];
 	const clock = { now: options.now ?? NOW };
 	const source = {
 		readCache: async () => options.cache ?? null,
-		writeCache: (rates: CachedRates) => {
+		writeCache: (rates: RatesCache) => {
 			calls.writes.push(rates);
 		},
 		fetchLatest: async () => {
@@ -146,7 +181,18 @@ const FRANKFURTER_RESPONSE = {
 	amount: 1,
 	base: "EUR",
 	date: "2026-11-26",
-	rates: { USD: 1.1, GBP: 0.85, JPY: 175 },
+	rates: {
+		AUD: 1.654,
+		CAD: 1.5617,
+		CHF: 0.9153,
+		CNY: 7.3096,
+		GBP: 0.85,
+		JPY: 175,
+		NOK: 10.718,
+		PLN: 4.4838,
+		SEK: 11.2025,
+		USD: 1.1,
+	},
 };
 
 test("with no cache, the first refresh fetches and caches the rates", async () => {
@@ -163,7 +209,7 @@ test("with no cache, the first refresh fetches and caches the rates", async () =
 		{
 			base: "EUR",
 			date: "2026-11-26",
-			rates: { USD: 1.1, GBP: 0.85, JPY: 175, EUR: 1 },
+			rates: { ...FRANKFURTER_RESPONSE.rates, EUR: 1 },
 			fetchedAt: NOW,
 		},
 	]);
@@ -217,7 +263,9 @@ test("offline, the stale cache stays, and the fetch waits an hour to retry", asy
 
 	assert.equal((await rates.refresh())?.date, "2026-11-25");
 	assert.equal(calls.fetches, 1);
-	assert.deepEqual(calls.writes, []);
+	assert.deepEqual(calls.writes, [
+		{ ...RATES, fetchedAt: NOW - 3 * DAY, failedAt: NOW },
+	]);
 
 	clock.now += HOUR - 1;
 	assert.equal((await rates.refresh())?.date, "2026-11-25");
@@ -240,7 +288,7 @@ test("offline with no cache, there are no rates", async () => {
 	assert.equal(rates.current(), null);
 });
 
-test("a response or cache that is not a rates table is ignored", async () => {
+test("a response or cache that is not a full ECB table is ignored, and counts as a failed fetch", async () => {
 	const { source, calls } = fakeSource({
 		cache: { message: "not rates" },
 		responses: [{ message: "not found" }],
@@ -249,23 +297,112 @@ test("a response or cache that is not a rates table is ignored", async () => {
 
 	assert.equal(await rates.refresh(), null);
 	assert.equal(calls.fetches, 1);
-	assert.deepEqual(calls.writes, []);
+	assert.deepEqual(calls.writes, [{ failedAt: NOW }]);
 
+	const { USD: _usd, ...withoutUsd } = FRANKFURTER_RESPONSE.rates;
+	const { GBP: _gbp, ...withoutGbp } = FRANKFURTER_RESPONSE.rates;
 	for (const broken of [
 		{ ...FRANKFURTER_RESPONSE, date: "yesterday" },
-		{ ...FRANKFURTER_RESPONSE, rates: { USD: -1 } },
-		{ ...FRANKFURTER_RESPONSE, rates: { USD: "1.1" } },
+		{ ...FRANKFURTER_RESPONSE, date: "2026-02-30" },
+		{ ...FRANKFURTER_RESPONSE, date: "2026-11-28" },
+		{ ...FRANKFURTER_RESPONSE, rates: {} },
+		{ ...FRANKFURTER_RESPONSE, rates: [] },
+		{ ...FRANKFURTER_RESPONSE, rates: { USD: 1.1, GBP: 0.85 } },
+		{ ...FRANKFURTER_RESPONSE, rates: withoutUsd },
+		{ ...FRANKFURTER_RESPONSE, rates: withoutGbp },
+		{
+			...FRANKFURTER_RESPONSE,
+			rates: { ...FRANKFURTER_RESPONSE.rates, USD: -1 },
+		},
+		{
+			...FRANKFURTER_RESPONSE,
+			rates: { ...FRANKFURTER_RESPONSE.rates, USD: "1.1" },
+		},
 		{ ...FRANKFURTER_RESPONSE, base: 1 },
+		{ ...FRANKFURTER_RESPONSE, base: "XYZ" },
 		null,
 		"rates",
 	]) {
-		const { source: brokenSource } = fakeSource({ responses: [broken] });
+		const { source: brokenSource, calls: brokenCalls } = fakeSource({
+			responses: [broken],
+		});
 		assert.equal(
 			await createCurrencyRates(brokenSource).refresh(),
 			null,
 			JSON.stringify(broken),
 		);
+		assert.deepEqual(brokenCalls.writes, [{ failedAt: NOW }]);
 	}
+
+	// Tomorrow's date is fine: the ECB's day can be ahead of the clock here.
+	const { source: aheadSource } = fakeSource({
+		responses: [{ ...FRANKFURTER_RESPONSE, date: "2026-11-27" }],
+	});
+	assert.equal(
+		(await createCurrencyRates(aheadSource).refresh())?.date,
+		"2026-11-27",
+	);
+});
+
+test("codes outside the ECB's list are dropped from the table", async () => {
+	const { source } = fakeSource({
+		responses: [
+			{
+				...FRANKFURTER_RESPONSE,
+				rates: { ...FRANKFURTER_RESPONSE.rates, THE: 2, END: 3 },
+			},
+		],
+	});
+	const rates = await createCurrencyRates(source).refresh();
+
+	assert.equal(rates?.rates.THE, undefined);
+	assert.equal(parseCurrencyConversion("2 the to end", rates), null);
+	assert.equal(
+		shown(parseCurrencyConversion("2 usd to eur", rates)),
+		"2 USD = 1.82 EUR",
+	);
+});
+
+test("a failed fetch is remembered across a restart", async () => {
+	const stale = { ...RATES, fetchedAt: NOW - 3 * DAY };
+	const first = fakeSource({ cache: stale });
+	await createCurrencyRates(first.source).refresh();
+	assert.deepEqual(first.calls.writes, [{ ...stale, failedAt: NOW }]);
+
+	const restarted = fakeSource({
+		cache: first.calls.writes[0],
+		responses: [FRANKFURTER_RESPONSE],
+		now: NOW + HOUR - 1,
+	});
+	const rates = createCurrencyRates(restarted.source);
+	assert.equal((await rates.refresh())?.date, "2026-11-25");
+	assert.equal(restarted.calls.fetches, 0);
+
+	restarted.clock.now = NOW + HOUR;
+	assert.equal((await rates.refresh())?.date, "2026-11-26");
+	assert.equal(restarted.calls.fetches, 1);
+	assert.deepEqual(restarted.calls.writes, [
+		{
+			base: "EUR",
+			date: "2026-11-26",
+			rates: { ...FRANKFURTER_RESPONSE.rates, EUR: 1 },
+			fetchedAt: NOW + HOUR,
+		},
+	]);
+});
+
+test("a failed fetch with no cache is remembered too", async () => {
+	const first = fakeSource({});
+	await createCurrencyRates(first.source).refresh();
+	assert.deepEqual(first.calls.writes, [{ failedAt: NOW }]);
+
+	const restarted = fakeSource({
+		cache: { failedAt: NOW },
+		responses: [FRANKFURTER_RESPONSE],
+		now: NOW + 10 * 60 * 1000,
+	});
+	assert.equal(await createCurrencyRates(restarted.source).refresh(), null);
+	assert.equal(restarted.calls.fetches, 0);
 });
 
 function tick() {
@@ -326,7 +463,7 @@ test("a fresh cache answers at once, with nothing late", async () => {
 		cache: { ...RATES, fetchedAt: NOW - HOUR },
 	});
 	const rates = createCurrencyRates(source);
-	await rates.load();
+	await tick();
 
 	assert.deepEqual(await lookup("100 usd to eur", rates), {
 		now: "100 USD = 80.00 EUR",
@@ -341,7 +478,7 @@ test("a stale cache answers at once, then the fresh rates replace it", async () 
 		responses: [FRANKFURTER_RESPONSE],
 	});
 	const rates = createCurrencyRates(source);
-	await rates.load();
+	await tick();
 
 	assert.deepEqual(await lookup("100 usd to eur", rates), {
 		now: "100 USD = 80.00 EUR",
@@ -355,7 +492,7 @@ test("offline with a stale cache, the last known rate shows with its date", asyn
 		cache: { ...RATES, fetchedAt: NOW - 30 * DAY },
 	});
 	const rates = createCurrencyRates(source);
-	await rates.load();
+	await tick();
 
 	const result = lookupCurrencyConversion("100 usd to eur", rates, () => {
 		assert.fail("no late result while offline");
