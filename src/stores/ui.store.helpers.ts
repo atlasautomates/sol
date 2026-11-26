@@ -442,8 +442,39 @@ export function parseTimezoneConversion(query: string): TemporaryResult | null {
 	};
 }
 
+// Feet and inches written together: 5'10, 5' 10", 5 ft 10 in, 5 feet 10 inches.
+const FEET_AND_INCHES =
+	/^(?<feet>\d+)\s*(?:'|′|ft|feet|foot)\s*(?<inches>\d*\.?\d+)\s*(?:"|″|''|in|inch|inches)?\s+(?:to|in)\s+(?<to>.+)$/i;
+
+function parseFeetAndInches(query: string): TemporaryResult | null {
+	const match = query.match(FEET_AND_INCHES);
+	if (!match?.groups) {
+		return null;
+	}
+
+	const feet = Number.parseFloat(match.groups.feet);
+	const inches = Number.parseFloat(match.groups.inches);
+	const result = convertUnits(feet * 12 + inches, "in", match.groups.to);
+	if (result?.kind !== "comparison") {
+		return null;
+	}
+
+	return {
+		...result,
+		left: {
+			label: "ft in",
+			value: `${formatConvertedValue(feet)}' ${formatConvertedValue(inches)}"`,
+		},
+	};
+}
+
 export function parseUnitConversion(query: string): TemporaryResult | null {
 	const normalized = query.trim().replace(/,/g, "").replace(/\s+/g, " ");
+	const feetAndInches = parseFeetAndInches(normalized);
+	if (feetAndInches != null) {
+		return feetAndInches;
+	}
+
 	const match = normalized.match(/^(?<value>-?\d*\.?\d+)\s*(?<units>.+)$/);
 
 	if (!match?.groups) {
