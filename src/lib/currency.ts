@@ -9,31 +9,38 @@ import {
 	CONVERSION_SEPARATOR,
 	MAX_CONVERSION_QUERY_LENGTH,
 	readAmount,
+	SHOWN_DIGITS,
 } from "./conversion.ts";
 import type { TemporaryResult } from "./temporaryResult.ts";
 
 export type CurrencyRates = {
-	// Every rate is units of that currency per one `base`.
+	// Every rate is units of that currency per one `base`. The table lists
+	// the base too, at 1.
 	base: string;
 	// The day the ECB published these rates, as YYYY-MM-DD.
 	date: string;
 	rates: Record<string, number>;
 };
 
-export type CachedRates = CurrencyRates & { fetchedAt: number };
+// What the cache holds: the last good table, when it was fetched, and when a
+// fetch last failed, so a restart keeps the wait before the next try.
+export type RatesCache = Partial<CurrencyRates> & {
+	fetchedAt?: number;
+	failedAt?: number;
+};
 
 export type CurrencyRatesSource = {
 	readCache: () => Promise<unknown>;
-	writeCache: (rates: CachedRates) => void;
+	writeCache: (cache: RatesCache) => void;
 	fetchLatest: () => Promise<unknown>;
 	now: () => number;
 };
 
 export type CurrencyRatesProvider = ReturnType<typeof createCurrencyRates>;
 
-// The currencies the ECB publishes. A query must name two of these, or two in
-// the cached table, before Sol fetches anything.
-export const ECB_CURRENCIES = [
+// The currencies the ECB publishes. A query must name two of these before Sol
+// fetches anything, and a table keeps only these.
+export const ECB_CURRENCIES: ReadonlySet<string> = new Set([
 	"AUD",
 	"BRL",
 	"CAD",
@@ -64,23 +71,42 @@ export const ECB_CURRENCIES = [
 	"TRY",
 	"USD",
 	"ZAR",
-];
+]);
 
-const CURRENCY_SYMBOLS: Record<string, string> = {
+// A table with fewer codes, or without USD and GBP, is a broken response.
+const MIN_TABLE_CODES = 10;
+const REQUIRED_CODES = ["USD", "GBP"];
+
+// Symbols and words for a currency. `pound` is a currency only here: the
+// unit parser runs first and reads `10 pounds to kg` as mass.
+const CURRENCY_NAMES: Record<string, string> = {
 	$: "USD",
 	"€": "EUR",
 	"£": "GBP",
 	"¥": "JPY",
+	dollar: "USD",
+	dollars: "USD",
+	euro: "EUR",
+	euros: "EUR",
+	pound: "GBP",
+	pounds: "GBP",
+	yen: "JPY",
+	franc: "CHF",
+	francs: "CHF",
 };
 
 // ISO 4217 currencies without minor units, among the ECB's.
 const WHOLE_UNIT_CURRENCIES = new Set(["JPY", "KRW", "ISK"]);
 
-const RATES_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
+// Past this, float arithmetic loses the cents.
+const MAX_AMOUNT = 1e12;
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const RETRY_AFTER_FAILURE_MS = HOUR_MS;
 
 const CURRENCY_QUERY = new RegExp(
-	`^(?<before>[$€£¥])?\\s*(?<amount>${AMOUNT})\\s*(?<from>[$€£¥]|[a-z]{3})?\\s+${CONVERSION_SEPARATOR}\\s+(?<to>[$€£¥]|[a-z]{3})$`,
+	`^(?<before>[$€£¥])?\\s*(?<amount>${AMOUNT})\\s*(?<from>[$€£¥]|[a-z]+)?\\s+${CONVERSION_SEPARATOR}\\s+(?<to>[$€£¥]|[a-z]+)$`,
 	"i",
 );
 
@@ -95,7 +121,10 @@ function currencyCode(token: string | undefined) {
 	if (token == null) {
 		return null;
 	}
-	return CURRENCY_SYMBOLS[token] ?? token.toUpperCase();
+	const lower = token.toLowerCase();
+	return (
+		CURRENCY_NAMES[lower] ?? (lower.length === 3 ? token.toUpperCase() : null)
+	);
 }
 
 // The amount and the two currencies a query names, when both are in `codes`.
@@ -107,8 +136,10 @@ function parseCurrencyQuery(
 		return null;
 	}
 
-	const normalized = query.trim().replace(/\s+/g, " ");
-	const groups = normalized.match(CURRENCY_QUERY)?.groups;
+	const groups = query
+		.trim()
+		.replace(/\s+/g, " ")
+		.match(CURRENCY_QUERY)?.groups;
 	if (groups == null) {
 		return null;
 	}
@@ -126,27 +157,30 @@ function parseCurrencyQuery(
 	}
 
 	const amount = readAmount(groups.amount);
-	if (amount == null) {
+	if (amount == null || Math.abs(amount) >= MAX_AMOUNT) {
 		return null;
 	}
 
 	return { amount, amountText: groups.amount, from, to };
 }
 
-function tableCodes(rates: CurrencyRates) {
-	return new Set([rates.base, ...Object.keys(rates.rates)]);
-}
-
-function rateOf(rates: CurrencyRates, code: string) {
-	return code === rates.base ? 1 : rates.rates[code];
-}
-
+// Cents, or none for yen; an amount under a cent shows three significant
+// digits (1 IDR is 0.0000495 EUR), written out rather than as 4.95e-5.
 function formatMoney(value: number, code: string) {
-	return value.toFixed(WHOLE_UNIT_CURRENCIES.has(code) ? 0 : 2);
+	const cents = WHOLE_UNIT_CURRENCIES.has(code) ? 0 : 2;
+	const magnitude = Math.abs(value);
+	if (magnitude === 0 || magnitude >= 10 ** -cents) {
+		return value.toFixed(cents);
+	}
+	const decimals = Math.min(20, 2 - Math.floor(Math.log10(magnitude)));
+	return Number(value.toFixed(decimals)).toFixed(decimals).replace(/0+$/, "");
 }
 
 function formatRate(value: number) {
-	return Number(value.toPrecision(6)).toString();
+	const rounded = Number(value.toPrecision(SHOWN_DIGITS));
+	return rounded >= 1e-6
+		? rounded.toString()
+		: rounded.toFixed(20).replace(/0+$/, "");
 }
 
 // The conversion a query asks for, or null when it names a currency missing
@@ -159,12 +193,12 @@ export function parseCurrencyConversion(
 		return null;
 	}
 
-	const parsed = parseCurrencyQuery(query, tableCodes(rates));
+	const parsed = parseCurrencyQuery(query, new Set(Object.keys(rates.rates)));
 	if (parsed == null) {
 		return null;
 	}
 
-	const rate = rateOf(rates, parsed.to) / rateOf(rates, parsed.from);
+	const rate = rates.rates[parsed.to] / rates.rates[parsed.from];
 	return {
 		kind: "comparison",
 		left: { label: parsed.from, value: parsed.amountText },
@@ -176,9 +210,27 @@ export function parseCurrencyConversion(
 	};
 }
 
-// A frankfurter.app response or a cache file, read as a rates table. The base
-// currency joins the table at 1, so the table lists every code it converts.
-function readRates(value: unknown): CurrencyRates | null {
+// A real calendar day, YYYY-MM-DD, no later than tomorrow.
+function isRatesDate(date: unknown, now: number): date is string {
+	const match =
+		typeof date === "string" && /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+	if (!match) {
+		return false;
+	}
+	const [year, month, day] = match.slice(1).map(Number);
+	const time = Date.UTC(year, month - 1, day);
+	const parsed = new Date(time);
+	return (
+		parsed.getUTCFullYear() === year &&
+		parsed.getUTCMonth() === month - 1 &&
+		parsed.getUTCDate() === day &&
+		time <= now + DAY_MS
+	);
+}
+
+// A frankfurter response or a cache, read as a rates table: ECB codes only,
+// with the base at 1. Null unless it has the codes a full table has.
+function readRates(value: unknown, now: number): CurrencyRates | null {
 	if (value == null || typeof value !== "object") {
 		return null;
 	}
@@ -186,92 +238,107 @@ function readRates(value: unknown): CurrencyRates | null {
 	const { base, date, rates } = value as Record<string, unknown>;
 	if (
 		typeof base !== "string" ||
-		!/^[A-Z]{3}$/.test(base) ||
-		typeof date !== "string" ||
-		!/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+		!ECB_CURRENCIES.has(base) ||
+		!isRatesDate(date, now) ||
 		rates == null ||
-		typeof rates !== "object"
+		typeof rates !== "object" ||
+		Array.isArray(rates)
 	) {
 		return null;
 	}
 
-	const table: Record<string, number> = {};
+	const table: Record<string, number> = { [base]: 1 };
 	for (const [code, rate] of Object.entries(rates)) {
-		if (
-			!/^[A-Z]{3}$/.test(code) ||
-			typeof rate !== "number" ||
-			!Number.isFinite(rate) ||
-			rate <= 0
-		) {
+		if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
 			return null;
 		}
-		table[code] = rate;
+		if (ECB_CURRENCIES.has(code)) {
+			table[code] = rate;
+		}
 	}
 
-	return { base, date, rates: { ...table, [base]: 1 } };
-}
-
-function readCachedRates(value: unknown): CachedRates | null {
-	const rates = readRates(value);
-	const fetchedAt = (value as { fetchedAt?: unknown } | null)?.fetchedAt;
-	if (rates == null || typeof fetchedAt !== "number") {
+	if (
+		Object.keys(table).length < MIN_TABLE_CODES ||
+		REQUIRED_CODES.some((code) => table[code] == null)
+	) {
 		return null;
 	}
-	return { ...rates, fetchedAt };
+
+	return { base, date, rates: table };
+}
+
+function readTimestamp(value: unknown, key: "fetchedAt" | "failedAt") {
+	const time = (value as Record<string, unknown> | null)?.[key];
+	return typeof time === "number" && Number.isFinite(time) ? time : null;
 }
 
 export function createCurrencyRates(source: CurrencyRatesSource) {
-	let cached: CachedRates | null = null;
-	let loading: Promise<void> | null = null;
+	let table: CurrencyRates | null = null;
+	let fetchedAt: number | null = null;
+	let failedAt: number | null = null;
 	let fetching: Promise<CurrencyRates | null> | null = null;
-	let lastFailureAt = Number.NEGATIVE_INFINITY;
 
-	function load() {
-		loading ??= source
-			.readCache()
-			.then((value) => {
-				cached ??= readCachedRates(value);
-			})
-			.catch(() => {});
-		return loading;
+	const loading = source
+		.readCache()
+		.then((value) => {
+			const cachedFetchedAt = readTimestamp(value, "fetchedAt");
+			const cachedTable = readRates(value, source.now());
+			if (cachedTable != null && cachedFetchedAt != null) {
+				table = cachedTable;
+				fetchedAt = cachedFetchedAt;
+			}
+			failedAt = readTimestamp(value, "failedAt");
+		})
+		.catch(() => {});
+
+	function cacheRecord(): RatesCache {
+		return table == null ? {} : { ...table, fetchedAt: fetchedAt ?? undefined };
 	}
 
 	async function fetchRates(): Promise<CurrencyRates | null> {
+		const startedAt = source.now();
+		let fetched: CurrencyRates | null = null;
 		try {
-			const rates = readRates(await source.fetchLatest());
-			if (rates == null) {
-				throw new Error("the rates response is not a rates table");
-			}
-			cached = { ...rates, fetchedAt: source.now() };
-			source.writeCache(cached);
+			fetched = readRates(await source.fetchLatest(), startedAt);
 		} catch {
-			lastFailureAt = source.now();
+			fetched = null;
 		}
-		return cached;
+
+		if (fetched == null) {
+			failedAt = source.now();
+			source.writeCache({ ...cacheRecord(), failedAt });
+		} else {
+			table = fetched;
+			fetchedAt = source.now();
+			failedAt = null;
+			source.writeCache(cacheRecord());
+		}
+		return table;
 	}
 
-	function isFresh(rates: CachedRates) {
-		const age = source.now() - rates.fetchedAt;
-		return age >= 0 && age < RATES_MAX_AGE_MS;
+	function isFresh() {
+		const age = fetchedAt == null ? -1 : source.now() - fetchedAt;
+		return age >= 0 && age < DAY_MS;
 	}
 
 	return {
-		load,
-
 		// The rates on hand now, fresh or stale, or null before any arrive.
 		current(): CurrencyRates | null {
-			return cached;
+			return table;
 		},
 
 		// The rates once any fetch they need is done. Fetches only when the
 		// cache is missing or a day old, and not within an hour of a failure.
 		async refresh(): Promise<CurrencyRates | null> {
-			await load();
-			if (cached != null && isFresh(cached)) {
-				return cached;
+			await loading;
+			if (table != null && isFresh()) {
+				return table;
 			}
-			if (source.now() - lastFailureAt < RETRY_AFTER_FAILURE_MS) {
-				return cached;
+			if (
+				failedAt != null &&
+				source.now() - failedAt < RETRY_AFTER_FAILURE_MS
+			) {
+				return table;
 			}
 			fetching ??= fetchRates().finally(() => {
 				fetching = null;
@@ -283,22 +350,18 @@ export function createCurrencyRates(source: CurrencyRatesSource) {
 
 // The answer to a currency query from the rates on hand, or null. When the
 // rates are missing or stale, it refreshes them and passes `onLate` the answer
-// from the new rates. A query that does not name two known currencies returns
+// from the new rates. A query that does not name two ECB currencies returns
 // null and fetches nothing.
 export function lookupCurrencyConversion(
 	query: string,
 	provider: CurrencyRatesProvider,
 	onLate: (result: TemporaryResult) => void,
 ): TemporaryResult | null {
-	const onHand = provider.current();
-	const codes = new Set([
-		...ECB_CURRENCIES,
-		...(onHand == null ? [] : tableCodes(onHand)),
-	]);
-	if (parseCurrencyQuery(query, codes) == null) {
+	if (parseCurrencyQuery(query, ECB_CURRENCIES) == null) {
 		return null;
 	}
 
+	const onHand = provider.current();
 	void provider.refresh().then((rates) => {
 		if (rates == null || rates === onHand) {
 			return;

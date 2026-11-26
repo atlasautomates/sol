@@ -8,10 +8,22 @@ import {
 	type RatesCache,
 } from "./currency.ts";
 
+// Round numbers, so expected results are easy to check by hand.
 const RATES: CurrencyRates = {
 	base: "EUR",
 	date: "2026-11-25",
-	rates: { EUR: 1, USD: 1.25, GBP: 0.8, JPY: 160, IDR: 20187.03, CHF: 0.95 },
+	rates: {
+		EUR: 1,
+		USD: 1.25,
+		GBP: 0.8,
+		JPY: 160,
+		IDR: 20187.03,
+		CHF: 0.95,
+		AUD: 1.6,
+		CAD: 1.5,
+		NOK: 10,
+		SEK: 11,
+	},
 };
 
 const HOUR = 60 * 60 * 1000;
@@ -76,14 +88,13 @@ test("the result row names the rate and the day it dates from", () => {
 
 test("only codes in the rates table convert", () => {
 	converts([
-		["100 cad to eur", null],
+		["100 brl to eur", null],
 		["100 usd to xyz", null],
 		["5 m to ft", null],
 		["100 kgs to lbs", null],
 		["100 usd", null],
 		["usd to eur", null],
 		["100 usd to e", null],
-		["100 usd to euro", null],
 		["2+2", null],
 	]);
 	assert.equal(parseCurrencyConversion("100 usd to eur", null), null);
