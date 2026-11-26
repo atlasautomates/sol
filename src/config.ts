@@ -1,6 +1,8 @@
 import {LogBox} from 'react-native'
 import Fuse, {IFuseOptions} from 'fuse.js'
 import * as Sentry from '@sentry/react-native'
+// src/env.ts is gitignored (it holds the Sentry DSN). A fresh clone or CI writes a stub:
+// export const SentryDSN = ''
 import {SentryDSN} from './env'
 
 LogBox.ignoreLogs(['Clipboard ', 'Component', 'Require cycle:'])

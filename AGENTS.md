@@ -29,7 +29,7 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents
   - File index acceptance (native): `sh macos/file-index-tests/run.sh`
   - Xcode build: scheme `debug`, unsigned, with `pod install` first.
 - The heavy layers run only when a changed file can affect them. The rule is `scripts/lib/affects-build.sh`: an allowlist of paths the build never reads (docs, root markdown, `.github/`, `scripts/`, `.githooks/`). Extend it only by adding paths that provably cannot affect the build, never by excluding code. `ci.yml` itself is allowlisted, so an edit to it is exercised at the next build-relevant change.
-- Known gaps, not yet in CI: `tsc --noEmit` (4 errors on `main`) and `biome ci` (82 errors on `main`). Each has an issue; add the layer to `ci.yml` once its issue lands.
+- Known gaps, not yet in CI: `tsc --noEmit` (4 errors on `main`) and `biome ci` (82 errors on `main`). Each has an issue (#7, #8); add the layer to `ci.yml` once its issue lands.
 - Merge only with `scripts/merge-pr.sh <pr>`. It refuses unless every check on the PR's head is green. It also refuses an unreviewed PR (`reviewer: n/a` or `pending`) without the `trivial` label, and a self-review (the reviewer's model id equals the author's).
 - Each clone arms the push guard once: `git config core.hooksPath .githooks`. The `pre-push` hook refuses any push to `main` and runs the JS tests first, unless every changed file is on the allowlist.
 - This repo has no self-hosted runner, and must never get one while it is public: a fork PR runs the workflow from its own head and could target it. If the repo ever goes private and gains one, remove the runner before making the repo public again.
