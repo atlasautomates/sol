@@ -38,7 +38,7 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents
 ### Security
 
 - `security.yml` runs on every PR and every push to `main`: `guard-secrets` runs gitleaks over the full git history, and `guard-workflows` runs zizmor over `.github/workflows/`.
-- `dependencies.yml` runs osv-scanner over `bun.lock` and `Gemfile.lock`: `guard-deps` on every PR (the vulnerabilities the PR introduces), `guard-deps-all` on `main` and weekly (every known one). osv-scanner cannot read `macos/Podfile.lock`; Dependabot covers CocoaPods.
+- `dependencies.yml` runs osv-scanner over `bun.lock` and `Gemfile.lock`: `guard-deps` on every PR (the vulnerabilities the PR introduces), `guard-deps-all` on `main` and weekly (every known one). Dependabot's swift ecosystem covers the two `Package.resolved` files under `macos/`. Known gap: nothing scans `macos/Podfile.lock` (osv-scanner can't read it and Dependabot has no CocoaPods support); see #15.
 - Dependabot alerts and security updates are on; Dependabot opens the fix PRs. Each one still gets a review and the attribution block before `scripts/merge-pr.sh`, and is never `trivial`.
 - `scripts/check-action-runtimes.sh` (the last step of `guard-workflows`) fails any workflow action whose `action.yml` at its pinned ref declares `node20` or older. Bumping an action means changing the SHA and its `# vX.Y.Z` comment together.
 - Actions settings allow only GitHub-owned actions plus `zizmorcore/zizmor-action@*`, `google/osv-scanner-action/*`, `oven-sh/setup-bun@*` and `ruby/setup-ruby@*`, and require SHA pinning. A new third-party action must be added to that list, SHA-pinned, or GitHub refuses the workflow at startup.
