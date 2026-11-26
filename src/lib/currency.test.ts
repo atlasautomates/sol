@@ -161,6 +161,15 @@ test("currency words: dollars, euros, pounds, yen and francs", () => {
 	]);
 });
 
+test("whole-unit currencies drop the decimal point, and huge results drop the cents", () => {
+	converts([
+		["0.0062475 eur to jpy", "0.0062475 EUR = 1 JPY"],
+		["0.001 eur to jpy", "0.001 EUR = 0.16 JPY"],
+		["999999999999 usd to idr", "999999999999 USD = 16149624000000 IDR"],
+		["999999999999 usd to eur", "999999999999 USD = 799999999999.20 EUR"],
+	]);
+});
+
 // A fake rates source: an in-memory cache file and a scripted network.
 function fakeSource(options: {
 	cache?: unknown;
@@ -414,6 +423,53 @@ test("a failed fetch with no cache is remembered too", async () => {
 	});
 	assert.equal(await createCurrencyRates(restarted.source).refresh(), null);
 	assert.equal(restarted.calls.fetches, 0);
+});
+
+test("a failure time in the future does not block fetching", async () => {
+	const { source, calls } = fakeSource({
+		cache: { ...RATES, fetchedAt: NOW - 3 * DAY, failedAt: NOW + DAY },
+		responses: [FRANKFURTER_RESPONSE],
+	});
+
+	assert.equal(
+		(await createCurrencyRates(source).refresh())?.date,
+		"2026-11-26",
+	);
+	assert.equal(calls.fetches, 1);
+});
+
+test("the base currency is 1, whatever the response says", async () => {
+	const { source } = fakeSource({
+		responses: [
+			{
+				...FRANKFURTER_RESPONSE,
+				rates: { ...FRANKFURTER_RESPONSE.rates, EUR: 2 },
+			},
+		],
+	});
+	const rates = await createCurrencyRates(source).refresh();
+
+	assert.equal(rates?.rates.EUR, 1);
+	assert.equal(
+		shown(parseCurrencyConversion("2 usd to eur", rates)),
+		"2 USD = 1.82 EUR",
+	);
+});
+
+test("a cache that cannot be written still answers from the fetched rates", async () => {
+	const { source } = fakeSource({ responses: [FRANKFURTER_RESPONSE] });
+	const rates = createCurrencyRates({
+		...source,
+		writeCache: () => {
+			throw new Error("disk full");
+		},
+	});
+
+	assert.deepEqual(await lookup("100 usd to eur", rates), {
+		now: null,
+		late: ["100 USD = 90.91 EUR"],
+	});
+	assert.equal(rates.current()?.date, "2026-11-26");
 });
 
 function tick() {

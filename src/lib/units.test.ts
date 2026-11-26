@@ -9,7 +9,15 @@ function converts(cases: Array<[string, string | null]>) {
 		const result = parseUnitConversion(query);
 		const actual =
 			result?.kind === "comparison"
-				? `${result.left.value} ${result.left.label} = ${result.right.value} ${result.right.label}`
+				? [
+						result.left.value,
+						result.left.label,
+						"=",
+						result.right.value,
+						result.right.label,
+					]
+						.filter(Boolean)
+						.join(" ")
 				: result;
 		assert.equal(actual, expected, `query: ${query}`);
 	}
@@ -172,14 +180,14 @@ test("queries that are not unit conversions give nothing", () => {
 
 test("feet and inches together", () => {
 	converts([
-		["5'10 to cm", `5' 10" ft in = 177.8 cm`],
-		[`5'10" to cm`, `5' 10" ft in = 177.8 cm`],
-		[`5' 10" in cm`, `5' 10" ft in = 177.8 cm`],
-		["5 ft 10 in to cm", `5' 10" ft in = 177.8 cm`],
-		["5ft10in to cm", `5' 10" ft in = 177.8 cm`],
-		["5 feet 10 inches to m", `5' 10" ft in = 1.778 m`],
-		["6'2.5 to in", `6' 2.5" ft in = 74.5 in`],
-		["5 ft 10 in in mm", `5' 10" ft in = 1778 mm`],
+		["5'10 to cm", `5' 10" = 177.8 cm`],
+		[`5'10" to cm`, `5' 10" = 177.8 cm`],
+		[`5' 10" in cm`, `5' 10" = 177.8 cm`],
+		["5 ft 10 in to cm", `5' 10" = 177.8 cm`],
+		["5ft10in to cm", `5' 10" = 177.8 cm`],
+		["5 feet 10 inches to m", `5' 10" = 1.778 m`],
+		["6'2.5 to in", `6' 2.5" = 74.5 in`],
+		["5 ft 10 in in mm", `5' 10" = 1778 mm`],
 		["5'10 to kg", null],
 	]);
 });
@@ -189,7 +197,7 @@ test("to and in are read in any case", () => {
 		["2 KM TO M", "2 km = 2000 m"],
 		["2 km To m", "2 km = 2000 m"],
 		["10 IN IN CM", "10 in = 25.4 cm"],
-		["5'10 TO CM", `5' 10" ft in = 177.8 cm`],
+		["5'10 TO CM", `5' 10" = 177.8 cm`],
 	]);
 });
 
@@ -216,7 +224,7 @@ test("inches in feet and inches must be under twelve", () => {
 	converts([
 		["5'13 to cm", null],
 		["5 ft 12 in to cm", null],
-		["5'11.5 to in", `5' 11.5" ft in = 71.5 in`],
+		["5'11.5 to in", `5' 11.5" = 71.5 in`],
 	]);
 });
 
@@ -226,4 +234,42 @@ test("a long pasted query returns nothing, fast", () => {
 	const started = performance.now();
 	assert.equal(parseUnitConversion(query), null);
 	assert.ok(performance.now() - started < 50, "took over 50 ms");
+});
+
+test("mmHg is its own unit beside torr", () => {
+	converts([
+		["1 mmhg to pa", "1 mmHg = 133.322387 Pa"],
+		["760 mmHg to torr", "760 mmHg = 760.000108 torr"],
+		["760 torr to atm", "760 torr = 1 atm"],
+	]);
+});
+
+test("huge values round to 12 significant digits, with no float noise", () => {
+	converts([
+		["1.1 year to ns", "1.1 year = 34713360000000000 ns"],
+		["99999999999999999999 mi to in", "99999999999999999999 mi = 6.336e+24 in"],
+		["1234567890123456 m to m", "1234567890123456 m = 1234567890120000 m"],
+	]);
+});
+
+test("small values are written out down to 1e-15, then in exponent form", () => {
+	converts([
+		["5 ns to min", "5 ns = 0.0000000000833333 min"],
+		["1 mm to mi", "1 mm = 0.000000621371 mi"],
+		["1 mcg to t", "1 mcg = 0.000000000001 t"],
+		["1 ns to year", "1 ns = 3.16881e-17 year"],
+	]);
+});
+
+test("more names: pnt, Greek mu, sq feet, and Mm as megametres", () => {
+	converts([
+		["1 pnt to ml", "1 pt = 473.176473 ml"],
+		["1000 μg to mg", "1000 mcg = 1 mg"],
+		["1000 µg to mg", "1000 mcg = 1 mg"],
+		["500 sq feet to m2", "500 ft² = 46.45152 m²"],
+		["1 sq foot to cm2", "1 ft² = 929.0304 cm²"],
+		["1 Mm to km", "1 Mm = 1000 km"],
+		["1 mm to m", "1 mm = 0.001 m"],
+		["1 MM to m", "1 mm = 0.001 m"],
+	]);
 });
