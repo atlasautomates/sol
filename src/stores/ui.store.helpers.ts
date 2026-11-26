@@ -115,6 +115,134 @@ const UNIT_ALIASES: Record<string, string> = {
 	celsius: "C",
 	fahrenheit: "F",
 	kelvin: "K",
+	cup: "cup",
+	cups: "cup",
+	tbsp: "Tbs",
+	tbs: "Tbs",
+	tablespoon: "Tbs",
+	tablespoons: "Tbs",
+	tsp: "tsp",
+	teaspoon: "tsp",
+	teaspoons: "tsp",
+	floz: "fl-oz",
+	"fl-oz": "fl-oz",
+	fluidounce: "fl-oz",
+	fluidounces: "fl-oz",
+	gal: "gal",
+	gallon: "gal",
+	gallons: "gal",
+	qt: "qt",
+	quart: "qt",
+	quarts: "qt",
+	pt: "pnt",
+	pint: "pnt",
+	pints: "pnt",
+	mph: "m/h",
+	"mi/h": "m/h",
+	kmh: "km/h",
+	kph: "km/h",
+	kmph: "km/h",
+	"km/h": "km/h",
+	"m/s": "m/s",
+	mps: "m/s",
+	knot: "knot",
+	knots: "knot",
+	kn: "knot",
+	kt: "knot",
+	kts: "knot",
+	"ft/s": "ft/s",
+	fps: "ft/s",
+	sqft: "ft2",
+	ft2: "ft2",
+	"ft²": "ft2",
+	squarefoot: "ft2",
+	squarefeet: "ft2",
+	sqm: "m2",
+	m2: "m2",
+	"m²": "m2",
+	squaremeter: "m2",
+	squaremeters: "m2",
+	squaremetre: "m2",
+	squaremetres: "m2",
+	sqkm: "km2",
+	"km²": "km2",
+	sqmi: "mi2",
+	"mi²": "mi2",
+	sqin: "in2",
+	"in²": "in2",
+	sqyd: "yd2",
+	"yd²": "yd2",
+	sqcm: "cm2",
+	"cm²": "cm2",
+	ac: "ac",
+	acre: "ac",
+	acres: "ac",
+	ha: "ha",
+	hectare: "ha",
+	hectares: "ha",
+	// Digital names typed in one case are bytes, as people write them
+	// (1 gb to mb). Bits are spelled out, or written Mb: see CASED_UNITS.
+	b: "B",
+	byte: "B",
+	bytes: "B",
+	kb: "KB",
+	kilobyte: "KB",
+	kilobytes: "KB",
+	mb: "MB",
+	megabyte: "MB",
+	megabytes: "MB",
+	gb: "GB",
+	gigabyte: "GB",
+	gigabytes: "GB",
+	tb: "TB",
+	terabyte: "TB",
+	terabytes: "TB",
+	bit: "b",
+	bits: "b",
+	kbit: "Kb",
+	kbits: "Kb",
+	kilobit: "Kb",
+	kilobits: "Kb",
+	mbit: "Mb",
+	mbits: "Mb",
+	megabit: "Mb",
+	megabits: "Mb",
+	gbit: "Gb",
+	gbits: "Gb",
+	gigabit: "Gb",
+	gigabits: "Gb",
+	tbit: "Tb",
+	tbits: "Tb",
+	terabit: "Tb",
+	terabits: "Tb",
+};
+
+// Names whose case decides the unit, matched before UNIT_ALIASES lowercases:
+// a lowercase b after an uppercase prefix is a bit (Mb), and kB is a byte.
+const CASED_UNITS: Record<string, string> = {
+	Kb: "Kb",
+	Mb: "Mb",
+	Gb: "Gb",
+	Tb: "Tb",
+	kB: "KB",
+};
+
+// convert-units keys that read as something else: m/h is its mph, but reads
+// as metres per hour.
+const REFUSED_UNITS = new Set(["m/h"]);
+
+// How a convert-units key shows in the result. The panel shows labels in
+// capitals, so bits need their own word to stay apart from bytes.
+const UNIT_LABELS: Record<string, string> = {
+	"m/h": "mph",
+	"fl-oz": "fl oz",
+	Tbs: "tbsp",
+	pnt: "pt",
+	b: "bit",
+	Kb: "Kbit",
+	Mb: "Mbit",
+	Gb: "Gbit",
+	Tb: "Tbit",
 };
 
 function offsetMinutesToUtcZone(offsetMinutes: number) {
@@ -126,8 +254,17 @@ function offsetMinutesToUtcZone(offsetMinutes: number) {
 	return `UTC${sign}${hours}:${paddedMinutes}`;
 }
 
-function normalizeUnit(rawUnit: string) {
-	const normalized = rawUnit.trim().toLowerCase().replace(/\s+/g, "");
+function normalizeUnit(rawUnit: string): string | null {
+	const compact = rawUnit.trim().replace(/\s+/g, "");
+	if (CASED_UNITS[compact]) {
+		return CASED_UNITS[compact];
+	}
+
+	const normalized = compact.toLowerCase();
+	if (REFUSED_UNITS.has(normalized)) {
+		return null;
+	}
+
 	if (UNIT_ALIASES[normalized]) {
 		return UNIT_ALIASES[normalized];
 	}
@@ -145,6 +282,12 @@ function normalizeUnit(rawUnit: string) {
 	}
 
 	return normalized;
+}
+
+function unitLabel(unit: string) {
+	return (
+		UNIT_LABELS[unit] ?? unit.replace(/^([a-z]+)2$/, "$1²").replace(/^([a-z]+)3$/, "$1³")
+	);
 }
 
 // convert-units' factors carry about six significant digits (453.592 g per
@@ -301,9 +444,7 @@ export function parseTimezoneConversion(query: string): TemporaryResult | null {
 
 export function parseUnitConversion(query: string): TemporaryResult | null {
 	const normalized = query.trim().replace(/,/g, "").replace(/\s+/g, " ");
-	const match = normalized.match(
-		/^(?<value>-?\d*\.?\d+)\s*(?<from>[a-zA-Z]+)\s*(?:to|in)\s*(?<to>[a-zA-Z]+)$/i,
-	);
+	const match = normalized.match(/^(?<value>-?\d*\.?\d+)\s*(?<units>.+)$/);
 
 	if (!match?.groups) {
 		return null;
@@ -314,8 +455,41 @@ export function parseUnitConversion(query: string): TemporaryResult | null {
 		return null;
 	}
 
-	const fromUnit = normalizeUnit(match.groups.from);
-	const toUnit = normalizeUnit(match.groups.to);
+	// `in` is both a separator and a unit (10 in in cm), so try each place
+	// the units could split.
+	for (const [from, to] of splitAtSeparator(match.groups.units)) {
+		const result = convertUnits(value, from, to);
+		if (result != null) {
+			return result;
+		}
+	}
+
+	return null;
+}
+
+function* splitAtSeparator(units: string): Generator<[string, string]> {
+	const separator = / (?:to|in) /g;
+	let found = separator.exec(units);
+	while (found != null) {
+		yield [
+			units.slice(0, found.index),
+			units.slice(found.index + found[0].length),
+		];
+		separator.lastIndex = found.index + 1;
+		found = separator.exec(units);
+	}
+}
+
+function convertUnits(
+	value: number,
+	rawFrom: string,
+	rawTo: string,
+): TemporaryResult | null {
+	const fromUnit = normalizeUnit(rawFrom);
+	const toUnit = normalizeUnit(rawTo);
+	if (fromUnit == null || toUnit == null) {
+		return null;
+	}
 
 	try {
 		const converted = convert(value)
@@ -324,11 +498,11 @@ export function parseUnitConversion(query: string): TemporaryResult | null {
 		return {
 			kind: "comparison",
 			left: {
-				label: fromUnit,
+				label: unitLabel(fromUnit),
 				value: formatConvertedValue(value),
 			},
 			right: {
-				label: toUnit,
+				label: unitLabel(toUnit),
 				value: formatConvertedValue(converted),
 			},
 		};

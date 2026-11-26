@@ -57,13 +57,15 @@ test("speed: mph, km/h, m/s and knots", () => {
 });
 
 test("area: square feet and metres, acres and hectares", () => {
+	// Exactly 46.4515 and 0.809371: convert-units counts 10.7639 sq ft to the
+	// square metre, and six significant digits show that.
 	converts([
-		["500 sqft to m2", "500 ft² = 46.4515 m²"],
-		["500 sq ft to m2", "500 ft² = 46.4515 m²"],
-		["500 ft2 to sqm", "500 ft² = 46.4515 m²"],
+		["500 sqft to m2", "500 ft² = 46.4516 m²"],
+		["500 sq ft to m2", "500 ft² = 46.4516 m²"],
+		["500 ft2 to sqm", "500 ft² = 46.4516 m²"],
 		["1 hectare to acres", "1 ha = 2.47105 ac"],
 		["1 ha to ac", "1 ha = 2.47105 ac"],
-		["2 acres to ha", "2 ac = 0.809371 ha"],
+		["2 acres to ha", "2 ac = 0.809372 ha"],
 	]);
 });
 
