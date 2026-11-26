@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/react-native";
 import { Assets } from "assets";
-import { Parser } from "expr-eval";
+import { evaluateExpression } from "lib/calculator";
 import { CONSTANTS } from "lib/constants";
 import {
 	FILE_SEARCH_PAGE,
@@ -42,18 +42,14 @@ import {
 import {
 	createTextTemporaryResult,
 	fetchFlightInfoFromWeb,
-	formatExpressionResult,
 	type BookmarkNode,
 	getInitials,
-	normalizeCalculatorQuery,
 	parseFlightIdentifier,
 	parseTimezoneConversion,
 	parseUnitConversion,
 	type TemporaryResult,
 	traverse,
 } from "./ui.store.helpers";
-
-const exprParser = new Parser();
 
 let onShowListener: EmitterSubscription | undefined;
 let onHideListener: EmitterSubscription | undefined;
@@ -796,21 +792,11 @@ export const createUIStore = (root: IRootStore) => {
 						});
 				}
 
-				try {
-					const res = exprParser.evaluate(
-						normalizeCalculatorQuery(store.query),
-					);
-					if (typeof res === "number" && !Number.isNaN(res)) {
-						store.temporaryResult = createTextTemporaryResult(
-							formatExpressionResult(res, store.query),
-							store.query,
-						);
-					} else {
-						store.temporaryResult = null;
-					}
-				} catch (_) {
-					store.temporaryResult = null;
-				}
+				const calculation = evaluateExpression(store.query);
+				store.temporaryResult =
+					calculation == null
+						? null
+						: createTextTemporaryResult(calculation, store.query);
 
 				if (query === "ip") {
 					const info = solNative.getWifiInfo();
