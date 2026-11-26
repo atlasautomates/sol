@@ -19,7 +19,7 @@ import {
 } from "react-native";
 import { useStore } from "store";
 import { ItemType, Widget } from "stores/ui.store";
-import type { TemporaryResult } from "stores/ui.store.helpers";
+import type { TemporaryResult } from "lib/temporaryResult";
 
 function TemporaryResultView({
 	result,

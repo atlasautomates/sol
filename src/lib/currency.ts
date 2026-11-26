@@ -4,7 +4,7 @@
 // table, reading a cache and fetching through an injected source, so tests
 // supply both and never reach the network.
 
-import type { TemporaryResult } from "stores/ui.store.helpers";
+import type { TemporaryResult } from "./temporaryResult.ts";
 
 export type CurrencyRates = {
 	// Every rate is units of that currency per one `base`.

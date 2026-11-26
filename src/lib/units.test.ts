@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseUnitConversion } from "./ui.store.helpers.ts";
+import { parseUnitConversion } from "./units.ts";
 
 // Each case is [query, "<left value> <left label> = <right value> <right label>"],
 // or null when the query is not a unit conversion.
