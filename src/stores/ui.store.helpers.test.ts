@@ -107,3 +107,17 @@ test("queries that are not unit conversions give nothing", () => {
 		["2+2", null],
 	]);
 });
+
+test("feet and inches together", () => {
+	converts([
+		["5'10 to cm", `5' 10" ft in = 177.8 cm`],
+		[`5'10" to cm`, `5' 10" ft in = 177.8 cm`],
+		[`5' 10" in cm`, `5' 10" ft in = 177.8 cm`],
+		["5 ft 10 in to cm", `5' 10" ft in = 177.8 cm`],
+		["5ft10in to cm", `5' 10" ft in = 177.8 cm`],
+		["5 feet 10 inches to m", `5' 10" ft in = 1.778 m`],
+		["6'2.5 to in", `6' 2.5" ft in = 74.5 in`],
+		["5 ft 10 in in mm", `5' 10" ft in = 1778 mm`],
+		["5'10 to kg", null],
+	]);
+});
