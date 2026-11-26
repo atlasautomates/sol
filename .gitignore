@@ -79,3 +79,6 @@ Sol.app.zip
 Sol.app copy.zip
 sentry.properties
 releases/*.zip
+
+# Worktrees for parallel branches
+.worktrees/
