@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "GHSA-8474-xrp6-wh69"
+ignoreUntil = 2027-02-26
+reason = "activesupport: cocoapods requires activesupport < 8; local release tooling only, never receives untrusted constant names; re-check when cocoapods allows 8.x"
