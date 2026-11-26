@@ -7,6 +7,7 @@ import { Key } from "components/Key";
 import { LoadingBar } from "components/LoadingBar";
 import { MainInput } from "components/MainInput";
 import { renderToKeys } from "lib/shortcuts";
+import type { TemporaryResult } from "lib/temporaryResult";
 import { observer } from "mobx-react-lite";
 import { type FC, useEffect, useRef } from "react";
 import {
@@ -19,7 +20,6 @@ import {
 } from "react-native";
 import { useStore } from "store";
 import { ItemType, Widget } from "stores/ui.store";
-import type { TemporaryResult } from "stores/ui.store.helpers";
 
 function TemporaryResultView({
 	result,

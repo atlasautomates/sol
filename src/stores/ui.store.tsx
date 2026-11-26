@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/react-native";
 import { Assets } from "assets";
 import { evaluateExpression } from "lib/calculator";
 import { CONSTANTS } from "lib/constants";
+import { lookupCurrencyConversion } from "lib/currency";
 import {
 	FILE_SEARCH_PAGE,
 	fileSearchPage,
@@ -34,6 +35,7 @@ import {
 import RNRestart from "react-native-restart-newarch";
 import type { IRootStore } from "store";
 import { PORTABLE_KEYS, UI_PERSISTED_KEYS } from "./config";
+import { currencyRates } from "./currency-rates";
 import { createBaseItems } from "./items";
 import {
 	readPersistedUIState,
@@ -766,6 +768,26 @@ export const createUIStore = (root: IRootStore) => {
 				const unitResult = parseUnitConversion(store.query);
 				if (unitResult != null) {
 					store.temporaryResult = unitResult;
+					return;
+				}
+
+				const currencySnapshot = store.query;
+				const currencyResult = lookupCurrencyConversion(
+					store.query,
+					currencyRates,
+					(result) => {
+						if (
+							store.focusedWidget === Widget.SEARCH &&
+							store.query === currencySnapshot
+						) {
+							runInAction(() => {
+								store.temporaryResult = result;
+							});
+						}
+					},
+				);
+				if (currencyResult != null) {
+					store.temporaryResult = currencyResult;
 					return;
 				}
 

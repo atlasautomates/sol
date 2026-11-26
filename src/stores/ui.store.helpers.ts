@@ -1,28 +1,9 @@
 import * as chrono from "chrono-node";
-import convert from "convert-units";
 import { DateTime } from "luxon";
+import type { TemporaryResult } from "../lib/temporaryResult.ts";
 
-export type TemporaryResult =
-	| {
-			kind: "text";
-			value: string;
-			secondary?: string;
-	  }
-	| {
-			kind: "comparison";
-			left: { label: string; value: string };
-			right: { label: string; value: string };
-			footer?: string;
-	  }
-	| {
-			kind: "flight";
-			flight: string;
-			status?: string;
-			departureTime?: string;
-			arrivalTime?: string;
-			terminal?: string;
-			gate?: string;
-	  };
+export { parseUnitConversion } from "../lib/units.ts";
+export type { TemporaryResult };
 
 export type BookmarkNode = {
 	type: "folder" | "url";
@@ -56,67 +37,6 @@ const TIMEZONE_ABBREVIATION_OFFSETS: Record<string, number> = {
 	AWST: 480,
 };
 
-const UNIT_ALIASES: Record<string, string> = {
-	meter: "m",
-	meters: "m",
-	metre: "m",
-	metres: "m",
-	kilometer: "km",
-	kilometers: "km",
-	kilometre: "km",
-	kilometres: "km",
-	centimeter: "cm",
-	centimeters: "cm",
-	centimetre: "cm",
-	centimetres: "cm",
-	millimeter: "mm",
-	millimeters: "mm",
-	millimetre: "mm",
-	millimetres: "mm",
-	inch: "in",
-	inches: "in",
-	foot: "ft",
-	feet: "ft",
-	yard: "yd",
-	yards: "yd",
-	mile: "mi",
-	miles: "mi",
-	gram: "g",
-	grams: "g",
-	kilogram: "kg",
-	kilograms: "kg",
-	mg: "mg",
-	milligram: "mg",
-	milligrams: "mg",
-	lb: "lb",
-	lbs: "lb",
-	pound: "lb",
-	pounds: "lb",
-	oz: "oz",
-	ounce: "oz",
-	ounces: "oz",
-	liter: "l",
-	liters: "l",
-	litre: "l",
-	litres: "l",
-	milliliter: "ml",
-	milliliters: "ml",
-	millilitre: "ml",
-	millilitres: "ml",
-	second: "s",
-	seconds: "s",
-	sec: "s",
-	minute: "min",
-	minutes: "min",
-	hour: "h",
-	hours: "h",
-	day: "d",
-	days: "d",
-	celsius: "C",
-	fahrenheit: "F",
-	kelvin: "K",
-};
-
 function offsetMinutesToUtcZone(offsetMinutes: number) {
 	const sign = offsetMinutes >= 0 ? "+" : "-";
 	const absoluteMinutes = Math.abs(offsetMinutes);
@@ -124,36 +44,6 @@ function offsetMinutesToUtcZone(offsetMinutes: number) {
 	const minutes = absoluteMinutes % 60;
 	const paddedMinutes = minutes.toString().padStart(2, "0");
 	return `UTC${sign}${hours}:${paddedMinutes}`;
-}
-
-function normalizeUnit(rawUnit: string) {
-	const normalized = rawUnit.trim().toLowerCase().replace(/\s+/g, "");
-	if (UNIT_ALIASES[normalized]) {
-		return UNIT_ALIASES[normalized];
-	}
-
-	if (normalized === "c") {
-		return "C";
-	}
-
-	if (normalized === "f") {
-		return "F";
-	}
-
-	if (normalized === "k") {
-		return "K";
-	}
-
-	return normalized;
-}
-
-function formatConvertedValue(value: number) {
-	if (!Number.isFinite(value)) {
-		return value.toString();
-	}
-
-	const rounded = Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
-	return rounded.toString();
 }
 
 export function createTextTemporaryResult(
@@ -287,44 +177,6 @@ export function parseTimezoneConversion(query: string): TemporaryResult | null {
 			value: targetDateTime.toFormat("ccc dd LLL HH:mm"),
 		},
 	};
-}
-
-export function parseUnitConversion(query: string): TemporaryResult | null {
-	const normalized = query.trim().replace(/,/g, "").replace(/\s+/g, " ");
-	const match = normalized.match(
-		/^(?<value>-?\d*\.?\d+)\s*(?<from>[a-zA-Z]+)\s*(?:to|in)\s*(?<to>[a-zA-Z]+)$/i,
-	);
-
-	if (!match?.groups) {
-		return null;
-	}
-
-	const value = Number.parseFloat(match.groups.value);
-	if (Number.isNaN(value)) {
-		return null;
-	}
-
-	const fromUnit = normalizeUnit(match.groups.from);
-	const toUnit = normalizeUnit(match.groups.to);
-
-	try {
-		const converted = convert(value)
-			.from(fromUnit as any)
-			.to(toUnit as any);
-		return {
-			kind: "comparison",
-			left: {
-				label: fromUnit,
-				value: formatConvertedValue(value),
-			},
-			right: {
-				label: toUnit,
-				value: formatConvertedValue(converted),
-			},
-		};
-	} catch {
-		return null;
-	}
 }
 
 export function parseFlightIdentifier(query: string) {
@@ -472,7 +324,11 @@ export function formatTemporaryResultForClipboard(result: TemporaryResult) {
 
 	if (result.kind === "comparison") {
 		const footer = result.footer ? ` | ${result.footer}` : "";
-		return `${result.left.value} ${result.left.label} = ${result.right.value} ${result.right.label}${footer}`;
+		// Feet and inches (5' 10") carry no label.
+		const left = [result.left.value, result.left.label]
+			.filter(Boolean)
+			.join(" ");
+		return `${left} = ${result.right.value} ${result.right.label}${footer}`;
 	}
 
 	const parts: string[] = [];

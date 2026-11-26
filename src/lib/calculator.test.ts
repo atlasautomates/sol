@@ -216,3 +216,13 @@ test("edge cases of the grammar", () => {
 		["0B11", "3"],
 	]);
 });
+
+test("finite results too large to round to 12 decimals keep their value", () => {
+	answers([
+		["170!", "7.257415615307994e+306"],
+		["1e300", "1e+300"],
+		["-1e300", "-1e+300"],
+		["2^1000", "1.0715086071862673e+301"],
+		["1e296", "1e+296"],
+	]);
+});

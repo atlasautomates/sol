@@ -91,8 +91,11 @@ export function formatExpressionResult(value: number, query = "") {
 		return value.toString();
 	}
 
+	// Past about 1.8e296 the scaled value overflows to Infinity. A number that
+	// large has no decimals left to round, so it shows as it is.
 	const scale = 10 ** EXPRESSION_RESULT_DECIMALS;
-	const rounded = Math.round((value + Number.EPSILON) * scale) / scale;
+	const scaled = (value + Number.EPSILON) * scale;
+	const rounded = Number.isFinite(scaled) ? Math.round(scaled) / scale : value;
 	const text = rounded.toString();
 
 	if (/\d,\d/.test(query)) {
