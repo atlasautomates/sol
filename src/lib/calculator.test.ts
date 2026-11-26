@@ -181,5 +181,10 @@ test("only arithmetic: no variables, logic, strings or random numbers", () => {
 		["gamma(5)", null],
 		["2.5!", null],
 		["(-1)!", null],
+		["constructor", null],
+		["__proto__", null],
+		["toString(1)", null],
+		["hasOwnProperty(1)", null],
+		["sqrt.constructor", null],
 	]);
 });
