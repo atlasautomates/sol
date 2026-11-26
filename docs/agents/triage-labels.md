@@ -13,3 +13,7 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
 Edit the "Label in our tracker" column to match whatever vocabulary you actually use.
+
+## PR labels
+
+`trivial`: every hunk of the PR is verifiable by shape in under a minute: a typo, a comment, a version comment, a label. Never logic, a workflow, a script, or a suppression file (`.gitleaksignore`, a zizmor ignore, `osv-scanner.toml`). `scripts/merge-pr.sh` lets a PR with this label merge without a named reviewer (`reviewer: n/a`); it still refuses a self-review and anything not green. The gate prints this same bar when it refuses (`scripts/lib/review-rule.sh`), so change both together.
