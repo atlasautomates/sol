@@ -188,3 +188,31 @@ test("only arithmetic: no variables, logic, strings or random numbers", () => {
 		["sqrt.constructor", null],
 	]);
 });
+
+test("deep nesting shows nothing instead of throwing", () => {
+	const query = `${"(".repeat(5000)}1${")".repeat(5000)}`;
+	assert.doesNotThrow(() => evaluateExpression(query));
+	assert.equal(evaluateExpression(query), null);
+});
+
+test("huge results are Infinity, and come back fast", () => {
+	const started = performance.now();
+	answers([
+		["9999!", "Infinity"],
+		["10^10^10", "Infinity"],
+	]);
+	assert.ok(performance.now() - started < 100);
+});
+
+test("edge cases of the grammar", () => {
+	answers([
+		["()", null],
+		["1..2", null],
+		["2+", null],
+		["2\t+\n2", "4"],
+		["2^-2^2", "0.0625"],
+		// expr-eval read only lowercase prefixes; these now evaluate.
+		["0X1F", "31"],
+		["0B11", "3"],
+	]);
+});

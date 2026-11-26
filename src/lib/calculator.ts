@@ -66,6 +66,8 @@ export function evaluateExpression(query: string): string | null {
 	try {
 		value = evaluate(normalizeCalculatorQuery(query));
 	} catch (_) {
+		// A parse error, and also the RangeError a stack overflow throws when a
+		// query nests deeper than the recursive parser can go: both show nothing.
 		return null;
 	}
 	if (Number.isNaN(value)) {
@@ -159,7 +161,9 @@ function evaluate(input: string): number {
 			throw new Error(`expected ${value}`);
 		}
 	};
-	const isPrefixFunction = (token: Token | undefined) =>
+	const isPrefixFunction = (
+		token: Token | undefined,
+	): token is Extract<Token, { kind: "name" }> =>
 		token?.kind === "name" && Object.hasOwn(PREFIX_FUNCTIONS, token.value);
 
 	// sum := term (("+" | "-") term)*
@@ -183,16 +187,10 @@ function evaluate(input: string): number {
 		}
 	}
 
-	// factor := ("+" | "-") factor | prefixFunction factor | power
-	// A prefix function followed by "(" is a call, parsed in postfix().
+	// factor := ("+" | "-") factor | power
 	function factor(): number {
 		if (acceptOp("-")) return -factor();
 		if (acceptOp("+")) return factor();
-		const token = peek();
-		if (isPrefixFunction(token) && !isOp(tokens[position + 1], "(")) {
-			position += 1;
-			return PREFIX_FUNCTIONS[(token as { value: string }).value](factor());
-		}
 		return power();
 	}
 
@@ -210,12 +208,20 @@ function evaluate(input: string): number {
 		return value;
 	}
 
-	// atom := number | constant | function "(" args ")" | "(" sum ")"
+	// atom := number | constant | "(" sum ")"
+	//       | prefixFunction "(" sum ")" | prefixFunction factor
+	//       | callFunction "(" args ")"
+	// With parentheses a prefix function binds like a call (`log2(8)^2` is 9);
+	// without them it takes the whole factor that follows (`log2 8^2` is 6).
 	function atom(): number {
 		const token = peek();
 		if (token === undefined) throw new Error("unexpected end");
 		position += 1;
 		if (token.kind === "number") return token.value;
+		if (isPrefixFunction(token)) {
+			const operand = isOp(peek(), "(") ? atom() : factor();
+			return PREFIX_FUNCTIONS[token.value](operand);
+		}
 		if (isOp(token, "(")) {
 			const value = sum();
 			expectOp(")");
@@ -224,9 +230,6 @@ function evaluate(input: string): number {
 		if (token.kind === "name") {
 			if (Object.hasOwn(CONSTANTS, token.value)) {
 				return CONSTANTS[token.value];
-			}
-			if (Object.hasOwn(PREFIX_FUNCTIONS, token.value)) {
-				return PREFIX_FUNCTIONS[token.value](atom());
 			}
 			if (Object.hasOwn(CALL_FUNCTIONS, token.value)) {
 				return CALL_FUNCTIONS[token.value](...callArguments());
