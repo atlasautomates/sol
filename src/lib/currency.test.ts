@@ -181,7 +181,11 @@ test("refreshes at the same time share one fetch", async () => {
 test("offline, the stale cache stays, and the fetch waits an hour to retry", async () => {
 	const { source, calls, clock } = fakeSource({
 		cache: { ...RATES, fetchedAt: NOW - 3 * DAY },
-		responses: [new Error("offline"), new Error("offline"), FRANKFURTER_RESPONSE],
+		responses: [
+			new Error("offline"),
+			new Error("offline"),
+			FRANKFURTER_RESPONSE,
+		],
 	});
 	const rates = createCurrencyRates(source);
 
@@ -267,7 +271,11 @@ test("typing a query that is not a currency conversion never fetches", async () 
 		"2+2",
 		"100 abc to xyz",
 	]) {
-		assert.deepEqual(await lookup(query, rates), { now: null, late: [] }, query);
+		assert.deepEqual(
+			await lookup(query, rates),
+			{ now: null, late: [] },
+			query,
+		);
 	}
 	assert.equal(calls.fetches, 0);
 });
@@ -333,6 +341,9 @@ test("offline with no cache, a currency query shows nothing", async () => {
 	const { source, calls } = fakeSource({});
 	const rates = createCurrencyRates(source);
 
-	assert.deepEqual(await lookup("100 usd to eur", rates), { now: null, late: [] });
+	assert.deepEqual(await lookup("100 usd to eur", rates), {
+		now: null,
+		late: [],
+	});
 	assert.equal(calls.fetches, 1);
 });

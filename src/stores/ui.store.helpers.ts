@@ -286,7 +286,8 @@ function normalizeUnit(rawUnit: string): string | null {
 
 function unitLabel(unit: string) {
 	return (
-		UNIT_LABELS[unit] ?? unit.replace(/^([a-z]+)2$/, "$1²").replace(/^([a-z]+)3$/, "$1³")
+		UNIT_LABELS[unit] ??
+		unit.replace(/^([a-z]+)2$/, "$1²").replace(/^([a-z]+)3$/, "$1³")
 	);
 }
 
