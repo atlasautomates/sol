@@ -92,7 +92,7 @@ test("the names that already worked still do", () => {
 		["212 fahrenheit to celsius", "212 F = 100 C"],
 		["300 k to c", "300 K = 26.85 C"],
 		["90 minutes to hours", "90 min = 1.5 h"],
-		["1,500 m to km", "1500 m = 1.5 km"],
+		["1,500 m to km", "1,500 m = 1.5 km"],
 	]);
 });
 
@@ -120,4 +120,47 @@ test("feet and inches together", () => {
 		["5 ft 10 in in mm", `5' 10" ft in = 1778 mm`],
 		["5'10 to kg", null],
 	]);
+});
+
+test("to and in are read in any case", () => {
+	converts([
+		["2 KM TO M", "2 km = 2000 m"],
+		["2 km To m", "2 km = 2000 m"],
+		["10 IN IN CM", "10 in = 25.4 cm"],
+		["5'10 TO CM", `5' 10" ft in = 177.8 cm`],
+	]);
+});
+
+test("the amount shows as typed", () => {
+	converts([
+		["1234567.89 m to m", "1234567.89 m = 1234567.89 m"],
+		["0.50 kg to g", "0.50 kg = 500 g"],
+		["-40 c to f", "-40 C = -40 F"],
+		["-2.5 km to m", "-2.5 km = -2500 m"],
+	]);
+});
+
+test("a decimal comma is a decimal point; a comma before three digits groups thousands", () => {
+	converts([
+		["1,5 km to m", "1,5 km = 1500 m"],
+		["12,75 kg to g", "12,75 kg = 12750 g"],
+		["1,000,000 m to km", "1,000,000 m = 1000 km"],
+		["1.234,5 m to km", "1.234,5 m = 1.2345 km"],
+	]);
+});
+
+test("inches in feet and inches must be under twelve", () => {
+	converts([
+		["5'13 to cm", null],
+		["5 ft 12 in to cm", null],
+		["5'11.5 to in", `5' 11.5" ft in = 71.5 in`],
+	]);
+});
+
+test("a long pasted query returns nothing, fast", () => {
+	const query = `1 ${"lorem ipsum in dolor to ".repeat(8000)}`;
+	assert.ok(query.length > 190_000);
+	const started = performance.now();
+	assert.equal(parseUnitConversion(query), null);
+	assert.ok(performance.now() - started < 50, "took over 50 ms");
 });

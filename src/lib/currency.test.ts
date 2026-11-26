@@ -41,7 +41,7 @@ test("an amount converts between codes, in any case, through the euro", () => {
 		["100 USD to EUR", "100 USD = 80.00 EUR"],
 		["100 Usd in gbp", "100 USD = 64.00 GBP"],
 		["100usd to eur", "100 USD = 80.00 EUR"],
-		["1,000 usd in eur", "1000 USD = 800.00 EUR"],
+		["1,000 usd in eur", "1,000 USD = 800.00 EUR"],
 		["12.5 gbp to usd", "12.5 GBP = 19.53 USD"],
 		["50 eur to eur", "50 EUR = 50.00 EUR"],
 	]);
@@ -87,6 +87,32 @@ test("only codes in the rates table convert", () => {
 		["2+2", null],
 	]);
 	assert.equal(parseCurrencyConversion("100 usd to eur", null), null);
+});
+
+test("negative amounts, decimal commas and the amount as typed", () => {
+	converts([
+		["-5 usd to eur", "-5 USD = -4.00 EUR"],
+		["-€5 to usd", null],
+		["1,6 eur to usd", "1,6 EUR = 2.00 USD"],
+		["1.000,5 eur to usd", "1.000,5 EUR = 1250.63 USD"],
+		["1234567.89 usd to eur", "1234567.89 USD = 987654.31 EUR"],
+		["100 USD TO EUR", "100 USD = 80.00 EUR"],
+	]);
+});
+
+test("a long pasted query returns nothing, fast", async () => {
+	const query = `1 ${"lorem ipsum in dolor to ".repeat(8000)}`;
+	const { source, calls } = fakeSource({ responses: [FRANKFURTER_RESPONSE] });
+	const rates = createCurrencyRates(source);
+	const started = performance.now();
+	assert.equal(parseCurrencyConversion(query, RATES), null);
+	assert.equal(
+		lookupCurrencyConversion(query, rates, () => {}),
+		null,
+	);
+	assert.ok(performance.now() - started < 50, "took over 50 ms");
+	await tick();
+	assert.equal(calls.fetches, 0);
 });
 
 // A fake rates source: an in-memory cache file and a scripted network.
@@ -241,6 +267,10 @@ test("a response or cache that is not a rates table is ignored", async () => {
 		);
 	}
 });
+
+function tick() {
+	return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 // Runs a lookup and waits for any late result it promised.
 async function lookup(
