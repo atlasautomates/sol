@@ -144,3 +144,20 @@ test("text that is not an expression returns nothing", () => {
 		['"a"', null],
 	]);
 });
+
+test("only arithmetic: no variables, logic, strings or random numbers", () => {
+	answers([
+		["x = 3", null],
+		["f(x) = x * 2", null],
+		["1 ? 2 : 3", null],
+		["true+1", null],
+		["1 and 0", null],
+		['length "ab"', null],
+		["if(1, 2, 3)", null],
+		["random()", null],
+		["[1, 2]", null],
+		["gamma(5)", null],
+		["2.5!", null],
+		["(-1)!", null],
+	]);
+});
