@@ -4,6 +4,12 @@
 // table, reading a cache and fetching through an injected source, so tests
 // supply both and never reach the network.
 
+import {
+	AMOUNT,
+	CONVERSION_SEPARATOR,
+	MAX_CONVERSION_QUERY_LENGTH,
+	readAmount,
+} from "./conversion.ts";
 import type { TemporaryResult } from "./temporaryResult.ts";
 
 export type CurrencyRates = {
@@ -73,10 +79,17 @@ const WHOLE_UNIT_CURRENCIES = new Set(["JPY", "KRW", "ISK"]);
 const RATES_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
 
-const CURRENCY_QUERY =
-	/^(?<before>[$€£¥])?\s*(?<amount>\d+(?:\.\d+)?|\.\d+)\s*(?<from>[$€£¥]|[a-z]{3})?\s+(?:to|in)\s+(?<to>[$€£¥]|[a-z]{3})$/i;
+const CURRENCY_QUERY = new RegExp(
+	`^(?<before>[$€£¥])?\\s*(?<amount>${AMOUNT})\\s*(?<from>[$€£¥]|[a-z]{3})?\\s+${CONVERSION_SEPARATOR}\\s+(?<to>[$€£¥]|[a-z]{3})$`,
+	"i",
+);
 
-type CurrencyQuery = { amount: number; from: string; to: string };
+type CurrencyQuery = {
+	amount: number;
+	amountText: string;
+	from: string;
+	to: string;
+};
 
 function currencyCode(token: string | undefined) {
 	if (token == null) {
@@ -90,7 +103,11 @@ function parseCurrencyQuery(
 	query: string,
 	codes: ReadonlySet<string>,
 ): CurrencyQuery | null {
-	const normalized = query.trim().replace(/,/g, "").replace(/\s+/g, " ");
+	if (query.length > MAX_CONVERSION_QUERY_LENGTH) {
+		return null;
+	}
+
+	const normalized = query.trim().replace(/\s+/g, " ");
 	const groups = normalized.match(CURRENCY_QUERY)?.groups;
 	if (groups == null) {
 		return null;
@@ -108,7 +125,12 @@ function parseCurrencyQuery(
 		return null;
 	}
 
-	return { amount: Number.parseFloat(groups.amount), from, to };
+	const amount = readAmount(groups.amount);
+	if (amount == null) {
+		return null;
+	}
+
+	return { amount, amountText: groups.amount, from, to };
 }
 
 function tableCodes(rates: CurrencyRates) {
@@ -145,7 +167,7 @@ export function parseCurrencyConversion(
 	const rate = rateOf(rates, parsed.to) / rateOf(rates, parsed.from);
 	return {
 		kind: "comparison",
-		left: { label: parsed.from, value: formatRate(parsed.amount) },
+		left: { label: parsed.from, value: parsed.amountText },
 		right: {
 			label: parsed.to,
 			value: formatMoney(parsed.amount * rate, parsed.to),

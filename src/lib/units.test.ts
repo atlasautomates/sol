@@ -133,7 +133,8 @@ test("to and in are read in any case", () => {
 
 test("the amount shows as typed", () => {
 	converts([
-		["1234567.89 m to m", "1234567.89 m = 1234567.89 m"],
+		["0.000123 km to m", "0.000123 km = 0.123 m"],
+		["1.50 m to cm", "1.50 m = 150 cm"],
 		["0.50 kg to g", "0.50 kg = 500 g"],
 		["-40 c to f", "-40 C = -40 F"],
 		["-2.5 km to m", "-2.5 km = -2500 m"],

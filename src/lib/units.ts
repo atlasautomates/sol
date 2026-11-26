@@ -1,5 +1,11 @@
 import convert from "convert-units";
-import { formatConvertedValue } from "./conversion.ts";
+import {
+	AMOUNT,
+	CONVERSION_SEPARATOR,
+	formatConvertedValue,
+	MAX_CONVERSION_QUERY_LENGTH,
+	readAmount,
+} from "./conversion.ts";
 import type { TemporaryResult } from "./temporaryResult.ts";
 
 const UNIT_ALIASES: Record<string, string> = {
@@ -229,8 +235,17 @@ function unitLabel(unit: string) {
 }
 
 // Feet and inches written together: 5'10, 5' 10", 5 ft 10 in, 5 feet 10 inches.
-const FEET_AND_INCHES =
-	/^(?<feet>\d+)\s*(?:'|′|ft|feet|foot)\s*(?<inches>\d*\.?\d+)\s*(?:"|″|''|in|inch|inches)?\s+(?:to|in)\s+(?<to>.+)$/i;
+const FEET_AND_INCHES = new RegExp(
+	`^(?<feet>\\d+)\\s*(?:'|′|ft|feet|foot)\\s*(?<inches>\\d*\\.?\\d+)\\s*(?:"|″|''|in|inch|inches)?\\s+${CONVERSION_SEPARATOR}\\s+(?<to>.+)$`,
+	"i",
+);
+
+// The amount, then the units. Two splits of the units cover `in` being both
+// a separator and a unit: the first separator (10 in in cm) and the last
+// (1 sq in in cm2). Each is one anchored match, so a long query stays linear.
+const AMOUNT_AND_UNITS = new RegExp(`^(?<amount>${AMOUNT})\\s*(?<units>.+)$`);
+const FIRST_SEPARATOR = new RegExp(`^(.+?) ${CONVERSION_SEPARATOR} (.+)$`, "i");
+const LAST_SEPARATOR = new RegExp(`^(.+) ${CONVERSION_SEPARATOR} (.+)$`, "i");
 
 function parseFeetAndInches(query: string): TemporaryResult | null {
 	const match = query.match(FEET_AND_INCHES);
@@ -240,42 +255,42 @@ function parseFeetAndInches(query: string): TemporaryResult | null {
 
 	const feet = Number.parseFloat(match.groups.feet);
 	const inches = Number.parseFloat(match.groups.inches);
-	const result = convertUnits(feet * 12 + inches, "in", match.groups.to);
-	if (result?.kind !== "comparison") {
+	if (inches >= 12) {
 		return null;
 	}
 
-	return {
-		...result,
-		left: {
-			label: "ft in",
-			value: `${formatConvertedValue(feet)}' ${formatConvertedValue(inches)}"`,
-		},
-	};
+	return convertUnits(
+		feet * 12 + inches,
+		`${match.groups.feet}' ${match.groups.inches}"`,
+		"in",
+		match.groups.to,
+		"ft in",
+	);
 }
 
 export function parseUnitConversion(query: string): TemporaryResult | null {
-	const normalized = query.trim().replace(/,/g, "").replace(/\s+/g, " ");
+	if (query.length > MAX_CONVERSION_QUERY_LENGTH) {
+		return null;
+	}
+
+	const normalized = query.trim().replace(/\s+/g, " ");
 	const feetAndInches = parseFeetAndInches(normalized);
 	if (feetAndInches != null) {
 		return feetAndInches;
 	}
 
-	const match = normalized.match(/^(?<value>-?\d*\.?\d+)\s*(?<units>.+)$/);
-
-	if (!match?.groups) {
+	const groups = normalized.match(AMOUNT_AND_UNITS)?.groups;
+	const value = groups == null ? null : readAmount(groups.amount);
+	if (groups == null || value == null) {
 		return null;
 	}
 
-	const value = Number.parseFloat(match.groups.value);
-	if (Number.isNaN(value)) {
-		return null;
-	}
-
-	// `in` is both a separator and a unit (10 in in cm), so try each place
-	// the units could split.
-	for (const [from, to] of splitAtSeparator(match.groups.units)) {
-		const result = convertUnits(value, from, to);
+	for (const separator of [FIRST_SEPARATOR, LAST_SEPARATOR]) {
+		const split = groups.units.match(separator);
+		const result =
+			split == null
+				? null
+				: convertUnits(value, groups.amount, split[1], split[2]);
 		if (result != null) {
 			return result;
 		}
@@ -284,23 +299,12 @@ export function parseUnitConversion(query: string): TemporaryResult | null {
 	return null;
 }
 
-function* splitAtSeparator(units: string): Generator<[string, string]> {
-	const separator = / (?:to|in) /g;
-	let found = separator.exec(units);
-	while (found != null) {
-		yield [
-			units.slice(0, found.index),
-			units.slice(found.index + found[0].length),
-		];
-		separator.lastIndex = found.index + 1;
-		found = separator.exec(units);
-	}
-}
-
 function convertUnits(
 	value: number,
+	amountText: string,
 	rawFrom: string,
 	rawTo: string,
+	fromLabel?: string,
 ): TemporaryResult | null {
 	const fromUnit = normalizeUnit(rawFrom);
 	const toUnit = normalizeUnit(rawTo);
@@ -314,10 +318,7 @@ function convertUnits(
 			.to(toUnit as any);
 		return {
 			kind: "comparison",
-			left: {
-				label: unitLabel(fromUnit),
-				value: formatConvertedValue(value),
-			},
+			left: { label: fromLabel ?? unitLabel(fromUnit), value: amountText },
 			right: {
 				label: unitLabel(toUnit),
 				value: formatConvertedValue(converted),
