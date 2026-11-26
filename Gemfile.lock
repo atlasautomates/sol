@@ -354,6 +354,7 @@ PLATFORMS
 DEPENDENCIES
   cocoapods
   fastlane
+  prism (< 2)
 
 BUNDLED WITH
    2.7.2
