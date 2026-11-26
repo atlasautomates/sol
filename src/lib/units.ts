@@ -1,9 +1,10 @@
 // Unit conversion for the search query: `5 ft to cm`, `2 cups to ml`.
 //
 // One table holds every unit: how it shows, the names it answers to, and its
-// exact factor to its measure's base unit. Factors are exact by definition
-// (1 in = 0.0254 m, 1 lb = 0.45359237 kg, 1 US gal = 3.785411784 l), so a
-// result has no error to hide beyond float noise.
+// factor to its measure's base unit. The factors are exact by definition
+// (1 in = 0.0254 m, 1 lb = 0.45359237 kg, 1 US gal = 3.785411784 l), except
+// a month and a year, which are average lengths (30.4375 and 365.25 days).
+// So a result has no error to hide beyond float noise.
 
 import {
 	AMOUNT,
@@ -62,7 +63,7 @@ function powerNames(names: string[], power: 2 | 3) {
 	return names.flatMap((name, index) =>
 		index === 0
 			? [`${short}${name}`, `${name}${power}`, `${name}${symbol}`]
-			: [`${word}${name}`],
+			: [`${word}${name}`, `${short}${name}`],
 	);
 }
 
@@ -106,6 +107,14 @@ const UNITS: Unit[] = [
 		names: ["km", ...plural("kilometer", "kilometre")],
 	},
 	{
+		// Mm is megametres: the case keeps it apart from mm.
+		label: "Mm",
+		measure: "length",
+		factor: 1e6,
+		names: plural("megameter", "megametre"),
+		casedNames: ["Mm"],
+	},
+	{
 		label: "in",
 		measure: "length",
 		factor: INCH,
@@ -141,7 +150,7 @@ const UNITS: Unit[] = [
 		label: "mcg",
 		measure: "mass",
 		factor: 1e-9,
-		names: ["mcg", "µg", ...plural("microgram")],
+		names: ["mcg", "µg", "μg", ...plural("microgram")],
 	},
 	{
 		label: "mg",
@@ -287,7 +296,7 @@ const UNITS: Unit[] = [
 		label: "pt",
 		measure: "volume",
 		factor: US_GALLON / 8,
-		names: ["pt", ...plural("pint")],
+		names: ["pt", "pnt", ...plural("pint")],
 	},
 	{
 		label: "qt",
@@ -611,7 +620,14 @@ const UNITS: Unit[] = [
 		label: "torr",
 		measure: "pressure",
 		factor: 101_325 / 760,
-		names: ["torr", "mmhg"],
+		names: ["torr"],
+	},
+	{
+		label: "mmHg",
+		measure: "pressure",
+		// The conventional millimetre of mercury, not quite a torr.
+		factor: 133.322387415,
+		names: ["mmhg"],
 	},
 
 	// Temperature, in kelvin.
@@ -762,7 +778,7 @@ function parseFeetAndInches(query: string): TemporaryResult | null {
 		`${match.groups.feet}' ${match.groups.inches}"`,
 		"in",
 		match.groups.to,
-		"ft in",
+		"",
 	);
 }
 

@@ -165,7 +165,7 @@ test("whole-unit currencies drop the decimal point, and huge results drop the ce
 	converts([
 		["0.0062475 eur to jpy", "0.0062475 EUR = 1 JPY"],
 		["0.001 eur to jpy", "0.001 EUR = 0.16 JPY"],
-		["999999999999 usd to idr", "999999999999 USD = 16149624000000 IDR"],
+		["999999999999 usd to idr", "999999999999 USD = 16149624000000000 IDR"],
 		["999999999999 usd to eur", "999999999999 USD = 799999999999.20 EUR"],
 	]);
 });

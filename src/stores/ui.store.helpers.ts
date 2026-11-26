@@ -2,8 +2,8 @@ import * as chrono from "chrono-node";
 import { DateTime } from "luxon";
 import type { TemporaryResult } from "../lib/temporaryResult.ts";
 
-export type { TemporaryResult };
 export { parseUnitConversion } from "../lib/units.ts";
+export type { TemporaryResult };
 
 export type BookmarkNode = {
 	type: "folder" | "url";
@@ -324,7 +324,11 @@ export function formatTemporaryResultForClipboard(result: TemporaryResult) {
 
 	if (result.kind === "comparison") {
 		const footer = result.footer ? ` | ${result.footer}` : "";
-		return `${result.left.value} ${result.left.label} = ${result.right.value} ${result.right.label}${footer}`;
+		// Feet and inches (5' 10") carry no label.
+		const left = [result.left.value, result.left.label]
+			.filter(Boolean)
+			.join(" ");
+		return `${left} = ${result.right.value} ${result.right.label}${footer}`;
 	}
 
 	const parts: string[] = [];

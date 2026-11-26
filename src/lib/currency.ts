@@ -10,6 +10,7 @@ import {
 	MAX_CONVERSION_QUERY_LENGTH,
 	readAmount,
 	SHOWN_DIGITS,
+	writeOut,
 } from "./conversion.ts";
 import type { TemporaryResult } from "./temporaryResult.ts";
 
@@ -164,23 +165,26 @@ function parseCurrencyQuery(
 	return { amount, amountText: groups.amount, from, to };
 }
 
-// Cents, or none for yen; an amount under a cent shows three significant
-// digits (1 IDR is 0.0000495 EUR), written out rather than as 4.95e-5.
+// Cents, or none for yen. An amount under a cent shows three significant
+// digits (1 IDR is 0.0000495 EUR), written out rather than as 4.95e-5. From
+// a trillion up, cents are below float precision, so the amount shows whole,
+// to 12 significant digits.
+const WHOLE_AMOUNT_FROM = 1e12;
+
 function formatMoney(value: number, code: string) {
 	const cents = WHOLE_UNIT_CURRENCIES.has(code) ? 0 : 2;
 	const magnitude = Math.abs(value);
+	if (magnitude >= WHOLE_AMOUNT_FROM) {
+		return writeOut(value, 12);
+	}
 	if (magnitude === 0 || magnitude >= 10 ** -cents) {
 		return value.toFixed(cents);
 	}
-	const decimals = Math.min(20, 2 - Math.floor(Math.log10(magnitude)));
-	return Number(value.toFixed(decimals)).toFixed(decimals).replace(/0+$/, "");
+	return writeOut(value, 3);
 }
 
 function formatRate(value: number) {
-	const rounded = Number(value.toPrecision(SHOWN_DIGITS));
-	return rounded >= 1e-6
-		? rounded.toString()
-		: rounded.toFixed(20).replace(/0+$/, "");
+	return writeOut(value, SHOWN_DIGITS);
 }
 
 // The conversion a query asks for, or null when it names a currency missing
@@ -247,7 +251,7 @@ function readRates(value: unknown, now: number): CurrencyRates | null {
 		return null;
 	}
 
-	const table: Record<string, number> = { [base]: 1 };
+	const table: Record<string, number> = {};
 	for (const [code, rate] of Object.entries(rates)) {
 		if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
 			return null;
@@ -256,6 +260,8 @@ function readRates(value: unknown, now: number): CurrencyRates | null {
 			table[code] = rate;
 		}
 	}
+	// Rates are per one base, so the base is 1 whatever the response says.
+	table[base] = 1;
 
 	if (
 		Object.keys(table).length < MIN_TABLE_CODES ||
@@ -291,6 +297,16 @@ export function createCurrencyRates(source: CurrencyRatesSource) {
 		})
 		.catch(() => {});
 
+	// A cache that cannot be written loses only the cache: the rates stay in
+	// memory for this run.
+	function writeCache(cache: RatesCache) {
+		try {
+			source.writeCache(cache);
+		} catch (error) {
+			console.error("Could not cache the currency rates", error);
+		}
+	}
+
 	function cacheRecord(): RatesCache {
 		return table == null ? {} : { ...table, fetchedAt: fetchedAt ?? undefined };
 	}
@@ -306,19 +322,20 @@ export function createCurrencyRates(source: CurrencyRatesSource) {
 
 		if (fetched == null) {
 			failedAt = source.now();
-			source.writeCache({ ...cacheRecord(), failedAt });
+			writeCache({ ...cacheRecord(), failedAt });
 		} else {
 			table = fetched;
 			fetchedAt = source.now();
 			failedAt = null;
-			source.writeCache(cacheRecord());
+			writeCache(cacheRecord());
 		}
 		return table;
 	}
 
-	function isFresh() {
-		const age = fetchedAt == null ? -1 : source.now() - fetchedAt;
-		return age >= 0 && age < DAY_MS;
+	// A time in the future (a clock set back) counts as long ago.
+	function isWithin(time: number | null, span: number) {
+		const age = time == null ? -1 : source.now() - time;
+		return age >= 0 && age < span;
 	}
 
 	return {
@@ -331,13 +348,10 @@ export function createCurrencyRates(source: CurrencyRatesSource) {
 		// cache is missing or a day old, and not within an hour of a failure.
 		async refresh(): Promise<CurrencyRates | null> {
 			await loading;
-			if (table != null && isFresh()) {
+			if (table != null && isWithin(fetchedAt, DAY_MS)) {
 				return table;
 			}
-			if (
-				failedAt != null &&
-				source.now() - failedAt < RETRY_AFTER_FAILURE_MS
-			) {
+			if (isWithin(failedAt, RETRY_AFTER_FAILURE_MS)) {
 				return table;
 			}
 			fetching ??= fetchRates().finally(() => {

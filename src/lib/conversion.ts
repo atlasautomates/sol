@@ -41,8 +41,8 @@ export function readAmount(text: string): number | null {
 // How many digits a converted value shows. A value of 1 or more shows up to
 // six decimals, and a smaller one six significant digits. Either way it keeps
 // at least as many significant digits as the amount typed (1.0000001 kg is
-// 1000.0001 g), and at most 12, which hides float noise (0.3 cm is
-// 3.0000000000000004 mm in floating point). Whole digits are never rounded.
+// 1000.0001 g), and never more than 12, at any size, which hides float noise
+// (0.3 cm is 3.0000000000000004 mm in floating point).
 export const SHOWN_DIGITS = 6;
 const MAX_SIGNIFICANT_DIGITS = 12;
 
@@ -56,12 +56,25 @@ export function formatConvertedValue(value: number, typedDigits = 1) {
 
 	const wholeDigits = Math.floor(Math.log10(Math.abs(value))) + 1;
 	const shown = Math.max(SHOWN_DIGITS + Math.max(wholeDigits, 0), typedDigits);
-	const digits = Math.min(
-		shown,
-		Math.max(MAX_SIGNIFICANT_DIGITS, wholeDigits),
-		100,
-	);
-	return Number(value.toPrecision(digits)).toString();
+	return writeOut(value, Math.min(shown, MAX_SIGNIFICANT_DIGITS));
+}
+
+// Below this a value shows in exponent form (3.16881e-17), as it does from
+// 1e21 up (6.336e+24), where JavaScript switches. Between, it is written out
+// in plain digits.
+const PLAIN_MIN = 1e-15;
+
+// `value` rounded to `significant` digits, in plain digits where it fits:
+// 0.0000000000833333 rather than 8.33333e-11.
+export function writeOut(value: number, significant: number) {
+	const rounded = Number(value.toPrecision(significant));
+	const magnitude = Math.abs(rounded);
+	if (magnitude === 0 || magnitude >= 1e-6 || magnitude < PLAIN_MIN) {
+		return rounded.toString();
+	}
+
+	const decimals = significant - 1 - Math.floor(Math.log10(magnitude));
+	return rounded.toFixed(Math.min(decimals, 100)).replace(/\.?0+$/, "");
 }
 
 // The significant digits in an amount as typed: 3 for 0.000123, 8 for
