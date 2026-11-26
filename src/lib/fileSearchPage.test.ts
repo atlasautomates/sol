@@ -51,7 +51,3 @@ test("revealing keeps the ranked order of that one search", () => {
 	const page = revealFileSearch(fileSearchPage(ranked));
 	assert.deepEqual(visibleFiles(page), ranked);
 });
-
-test("CI CANARY: this JS test fails on purpose", () => {
-	assert.equal(1, 2, "CI CANARY JS");
-});

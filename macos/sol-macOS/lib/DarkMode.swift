@@ -18,5 +18,3 @@ struct DarkMode {
     let _ = AppleScriptHelper.runAppleScript("\(prefix) set dark mode to \(value)")
   }
 }
-
-let ciCanaryCompileError: Int = "CI CANARY Swift compile error"
