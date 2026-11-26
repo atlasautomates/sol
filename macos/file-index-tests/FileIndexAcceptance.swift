@@ -660,6 +660,7 @@ let tests: [(String, () -> Void)] = [
   ("a place match ranks with dates below path and name", testPlaceRanksWithDatesBelowPathAndName),
   ("a name and a place appear once", testNameAndPlaceAppearsOnce),
   ("a legacy index is filled once", testLegacyIndexIsFilledOnce),
+  ("CI CANARY native", { check(false, "CI CANARY native: this case fails on purpose") }),
 ]
 
 @main

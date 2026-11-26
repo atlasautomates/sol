@@ -1,0 +1,81 @@
+#!/bin/sh
+# Layer 2 of the PR-only invariant (see the repo's AGENTS.md). Installed by the setup-ci skill.
+# Client-side; each clone runs `git config core.hooksPath .githooks` once to arm it.
+# Refuses any push that updates or deletes main (landing happens only through
+# scripts/merge-pr.sh), then runs the fast tests so an obviously red branch never
+# reaches CI, unless every changed file is on the build-irrelevant allowlist
+# (scripts/lib/affects-build.sh). CI on the PR stays the authority and runs the full suite.
+zero=0000000000000000000000000000000000000000
+# Saved so the refusal loop below reads it first and the change list is built from it after.
+refs=$(cat)
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      if [ "$local_sha" = "$zero" ]; then
+        echo "pre-push: refusing to delete main." >&2
+      else
+        echo "pre-push: refusing direct push to main. Open a PR and land it with scripts/merge-pr.sh." >&2
+      fi
+      exit 1 ;;
+  esac
+done <<EOF
+$refs
+EOF
+
+# Paths changed by every ref being pushed, as one list. Any diff that cannot be computed makes the
+# whole list unknown, and an unknown list runs the tests (fail closed).
+# A new remote branch diffs from its merge-base with the local origin/main, with no fetch: a stale
+# origin/main only yields an older merge-base, which adds files to the list and so leans towards
+# running. Adding a fetch here would buy nothing but a network dependency.
+# A push that only deletes branches yields an empty list and runs the tests; deliberate, as rare
+# and fail-closed.
+changed() {
+  while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ -n "$local_sha" ] || continue
+    [ "$local_sha" = "$zero" ] && continue
+    if [ "$remote_sha" = "$zero" ]; then
+      base=$(git merge-base refs/remotes/origin/main "$local_sha^{commit}") || exit 1
+    else
+      base=$remote_sha
+    fi
+    # --no-renames: a rename across the allowlist boundary (a source file moved to docs/x.md)
+    # would otherwise list only the new path and skip, though the app lost a source file.
+    git diff --name-only --no-renames "$base" "$local_sha^{commit}" -- || exit 1
+  done <<EOF
+$refs
+EOF
+}
+# The library is bash (arrays) and this hook is POSIX sh, so the rule runs in a bash child. Only
+# exit status 1 means "skip": a broken library, a missing bash (127) or any other failure runs.
+# Sourcing a file with a syntax error also returns 1, so a library that fails to load or does not
+# define affects_build exits 2 instead.
+lib="$(git rev-parse --show-toplevel)/scripts/lib/affects-build.sh" &&
+  [ -f "$lib" ] &&
+  list=$(changed) && {
+    printf '%s\n' "$list" | bash -c '. "$1" && [ "$(type -t affects_build)" = function ] || exit 2; affects_build' _ "$lib"
+    status=$?
+    case $status in
+      0) ;;
+      1)
+        echo "pre-push: skipping the fast tests: every changed file is on the build-irrelevant allowlist (scripts/lib/affects-build.sh)" >&2
+        exit 0 ;;
+      *) echo "pre-push: could not evaluate the build-relevance rule (status $status); running the tests" >&2 ;;
+    esac
+  }
+
+echo "pre-push: running fast tests (CI runs the full suite on the PR)..." >&2
+# Fast tests: the JS unit tests (node:test, no install needed). The native acceptance runner and
+# the Xcode build take minutes, so they run in CI only.
+# A push from a worktree exports GIT_DIR (and friends) into this hook, and GIT_DIR outranks
+# `git -C`: a test that shells out to git in a temp repo would act on the real one instead
+# (Hermes, 2026-11-09: a fixture's `push origin main` aimed at the real main). A worktree push exports
+# GIT_DIR, GIT_EXEC_PATH and GIT_PREFIX; `git -c … push` adds GIT_CONFIG_PARAMETERS (git 2.54, probed).
+# Strip all but GIT_EXEC_PATH, which locates git-core.
+log="${TMPDIR:-/tmp}/pre-push-$$.log"
+if ! env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS node --experimental-strip-types --test "src/**/*.test.ts" >"$log" 2>&1; then
+  echo "pre-push: fast tests failed. Fix them before pushing. Last lines:" >&2
+  tail -n 25 "$log" >&2
+  exit 1
+fi
+rm -f "$log"
+exit 0

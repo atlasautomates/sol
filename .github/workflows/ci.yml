@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# bash with pipefail: a failing tool inside `cmd | tee log` turns the step red, not green.
+defaults:
+  run:
+    shell: bash
+
+# Least privilege: the job only reads the repo. Stated here so a change to the repo-wide
+# default can never widen what a run on Adrian's Mac may do.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + tests
+    # Private repo: Adrian's Mac (self-hosted, label `xcode`), free and on the exact Xcode in use.
+    # Public repo: GitHub's Macs, free for public repos. This routing and the guard below are a
+    # backstop only: a fork PR runs the workflow from its own head and can rewrite both. The real
+    # protection is removing the self-hosted runner before the repo is made public (AGENTS.md).
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "macOS", "xcode"]') || 'macos-latest' }}
+    timeout-minutes: 45
+    steps:
+      - name: Refuse a public repo on a self-hosted runner
+        # Belt and braces for the switch above: if the routing ever breaks, fail before checkout.
+        if: runner.environment == 'self-hosted' && github.event.repository.private != true
+        run: |
+          echo "::error::This repo is public; self-hosted runners only serve private repos."
+          exit 1
+
+      # Actions are pinned to full commit SHAs, never tags: a moved tag would run new code as
+      # Adrian on his Mac. The comment names the release; Dependabot or a deliberate bump updates both.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later needs the token; leaving it on disk lets a step or artifact carry it out.
+          persist-credentials: false
+          # Full history, so the step below can diff against the PR base or the previous main.
+          # Without the token on disk a later `git fetch` cannot authenticate, and the repo is small.
+          fetch-depth: 0
+
+      # The job always runs and always reports `build + tests` (merge-pr.sh reads the set of
+      # checks); only the build is skipped when every changed file is on the build-irrelevant
+      # allowlist in scripts/lib/affects-build.sh. Any diff that cannot be computed runs it.
+      - name: Does any changed file affect the build?
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          # --no-renames on both diffs: a rename across the allowlist boundary (a source file moved
+          # to docs/x.md) would otherwise list only the new path and skip.
+          if [[ "$EVENT" == pull_request ]]; then
+            list=$(git diff --name-only --no-renames "origin/$BASE_REF...HEAD") || list=""
+          elif [[ "$BEFORE" =~ ^0+$ || -z "$BEFORE" ]]; then
+            list=""   # no previous commit to compare with (e.g. the branch was just created)
+          else
+            list=$(git diff --name-only --no-renames "$BEFORE" "$SHA") || list=""
+          fi
+          # An empty list runs (fail closed), so each failure above degrades to a full run.
+          # The rule's own acceptance test runs first: scripts/ is allowlisted, so a logic
+          # regression in the rule would otherwise skip the build silently (review of Hermes #141).
+          scripts/test-affects-build.sh
+          source scripts/lib/affects-build.sh
+          # Only exit status 1 means "skip"; any other status from the rule runs.
+          status=0; printf '%s\n' "$list" | affects_build || status=$?
+          if (( status == 1 )); then run=false; else run=true; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "changed files:"; sed 's/^/  /' <<<"$list"
+          echo "run=$run"
+
+      - name: Skipped
+        if: steps.changes.outputs.run != 'true'
+        run: 'echo "skipped: no build-relevant file changed"'
+
+      # ---- Setup. Each layer below runs only when the setup it needs succeeded, and every layer
+      # runs even when an earlier layer failed (`!cancelled()`), so one red run names every failure.
+
+      - name: Xcode
+        if: steps.changes.outputs.run == 'true'
+        run: xcodebuild -version
+
+      - name: Node
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # The JS tests run TypeScript directly with type stripping (node:test).
+          node-version: 24
+
+      - name: Bun
+        if: steps.changes.outputs.run == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install JS dependencies
+        id: bun
+        if: steps.changes.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Stub src/env.ts
+        id: env
+        if: steps.changes.outputs.run == 'true'
+        # src/env.ts is gitignored: it holds the Sentry DSN, a secret. src/config.ts imports it, so
+        # Metro's bundle step (and tsc) fail without it. An empty DSN leaves Sentry unconfigured.
+        run: printf '%s\n' "export const SentryDSN = ''" > src/env.ts
+
+      - name: Ruby and gems
+        if: steps.changes.outputs.run == 'true'
+        uses: ruby/setup-ruby@145243922b4465b78e04dd66294782c7de45901f # v1.345.0
+        with:
+          ruby-version: '3.2.8'   # mise.toml pins it
+          bundler-cache: true     # bundle install from Gemfile.lock, cached
+
+      # Pods/ is not committed; Podfile.lock is. The cache only saves the downloads: `pod install`
+      # still runs and still checks the sandbox against Podfile.lock.
+      - name: Cache Pods
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: macos/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('macos/Podfile.lock', 'bun.lock') }}
+
+      - name: Install Pods
+        id: pods
+        if: steps.changes.outputs.run == 'true' && steps.bun.outcome == 'success'
+        working-directory: macos
+        run: bundle exec pod install
+
+      # ---- Layers.
+
+      - name: JS tests
+        if: ${{ !cancelled() && steps.changes.outputs.run == 'true' && steps.bun.outcome == 'success' }}
+        run: node --experimental-strip-types --test "src/**/*.test.ts"
+
+      - name: File index acceptance (native)
+        if: ${{ !cancelled() && steps.changes.outputs.run == 'true' }}
+        # Compiles FileIndex.swift and its Objective-C helpers with swiftc, then runs the cases.
+        run: sh macos/file-index-tests/run.sh
+
+      - name: Xcode build (debug, unsigned)
+        if: ${{ !cancelled() && steps.changes.outputs.run == 'true' && steps.pods.outcome == 'success' && steps.env.outcome == 'success' }}
+        # Build only: no Xcode test target exists. A fresh DerivedData per run.
+        # RCT_NO_LAUNCH_PACKAGER: the debug scheme otherwise opens Metro in a Terminal window.
+        # SENTRY_DISABLE_AUTO_UPLOAD: the source-map upload needs macos/sentry.properties, a secret.
+        # CODE_SIGNING_ALLOWED=NO: CI holds no signing identity.
+        # Capture xcodebuild's own exit status before trimming the log; a `cmd | grep || true`
+        # pipeline would report the grep's status instead and turn a red run green.
+        env:
+          RCT_NO_LAUNCH_PACKAGER: '1'
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+        run: |
+          out="${RUNNER_TEMP:?}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$out"
+          set +e
+          xcodebuild build \
+            -workspace macos/sol.xcworkspace \
+            -scheme debug \
+            -destination "platform=macOS" \
+            -derivedDataPath "$out/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            > "$out/xcodebuild.log" 2>&1
+          status=$?
+          grep -E "error:|\*\* BUILD" "$out/xcodebuild.log"
+          grep -A10 "The following build commands failed" "$out/xcodebuild.log"
+          exit $status
+
+      - name: Keep the build log when something fails
+        if: failure() && steps.changes.outputs.run == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/run-${{ github.run_id }}-${{ github.run_attempt }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 14
