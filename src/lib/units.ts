@@ -34,6 +34,9 @@ type Measure =
 type Unit = {
 	// As the result shows it. The panel shows labels in capitals.
 	label: string;
+	// A label that is a word takes this form beside any number but 1: 2 cups.
+	// A symbol (ml, ft, kg) has none.
+	pluralLabel?: string;
 	measure: Measure;
 	// Base units in one of this unit: metres, kilograms, litres, square
 	// metres, m/s, seconds, bytes, joules, watts, pascals, radians, items.
@@ -178,6 +181,7 @@ const UNITS: Unit[] = [
 	},
 	{
 		label: "short ton",
+		pluralLabel: "short tons",
 		measure: "mass",
 		factor: 2000 * POUND,
 		names: plural("shortton", "uston"),
@@ -288,6 +292,7 @@ const UNITS: Unit[] = [
 	},
 	{
 		label: "cup",
+		pluralLabel: "cups",
 		measure: "volume",
 		factor: US_GALLON / 16,
 		names: plural("cup"),
@@ -363,6 +368,7 @@ const UNITS: Unit[] = [
 	},
 	{
 		label: "knot",
+		pluralLabel: "knots",
 		measure: "speed",
 		factor: 1852 / 3600,
 		names: ["kn", "kt", "kts", ...plural("knot")],
@@ -408,18 +414,21 @@ const UNITS: Unit[] = [
 	{ label: "d", measure: "time", factor: DAY, names: ["d", ...plural("day")] },
 	{
 		label: "week",
+		pluralLabel: "weeks",
 		measure: "time",
 		factor: 7 * DAY,
 		names: plural("wk", "week"),
 	},
 	{
 		label: "month",
+		pluralLabel: "months",
 		measure: "time",
 		factor: (365.25 / 12) * DAY,
 		names: plural("month"),
 	},
 	{
 		label: "year",
+		pluralLabel: "years",
 		measure: "time",
 		factor: 365.25 * DAY,
 		names: plural("yr", "year"),
@@ -428,7 +437,13 @@ const UNITS: Unit[] = [
 	// Digital, in bytes. Decimal as on macOS (1 GB = 1000 MB); KiB to TiB are
 	// binary. A name typed in one case is bytes, as people write them
 	// (1 gb to mb); bits are spelled out, or written Kb, Mb, Gb, Tb.
-	{ label: "bit", measure: "digital", factor: 1 / 8, names: plural("bit") },
+	{
+		label: "bit",
+		pluralLabel: "bits",
+		measure: "digital",
+		factor: 1 / 8,
+		names: plural("bit"),
+	},
 	{
 		label: "Kbit",
 		measure: "digital",
@@ -740,6 +755,13 @@ function findUnit(rawName: string): Unit | null {
 	);
 }
 
+// The label beside a value as shown: `1 cup`, but `2 cups` and `0.5 cups`.
+function labelFor(unit: Unit, shownValue: number | null) {
+	return Math.abs(shownValue ?? 1) === 1
+		? unit.label
+		: (unit.pluralLabel ?? unit.label);
+}
+
 function toBase(value: number, unit: Unit) {
 	return (value + (unit.offset ?? 0)) * unit.factor;
 }
@@ -826,15 +848,13 @@ function convertUnits(
 		return null;
 	}
 
+	const converted = formatConvertedValue(
+		fromBase(toBase(value, from), to),
+		typedDigits(amountText),
+	);
 	return {
 		kind: "comparison",
-		left: { label: fromLabel ?? from.label, value: amountText },
-		right: {
-			label: to.label,
-			value: formatConvertedValue(
-				fromBase(toBase(value, from), to),
-				typedDigits(amountText),
-			),
-		},
+		left: { label: fromLabel ?? labelFor(from, value), value: amountText },
+		right: { label: labelFor(to, Number(converted)), value: converted },
 	};
 }
