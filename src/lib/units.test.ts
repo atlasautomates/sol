@@ -45,7 +45,7 @@ test("conversions show up to six decimals, with no float noise and no lost digit
 
 test("volume: cups, spoons, fluid ounces, gallons and litres (US measures)", () => {
 	converts([
-		["2 cups to ml", "2 cup = 473.176473 ml"],
+		["2 cups to ml", "2 cups = 473.176473 ml"],
 		["1 cup to tbsp", "1 cup = 16 tbsp"],
 		["1 tbsp to tsp", "1 tbsp = 3 tsp"],
 		["1 tablespoon to ml", "1 tbsp = 14.786765 ml"],
@@ -55,7 +55,7 @@ test("volume: cups, spoons, fluid ounces, gallons and litres (US measures)", () 
 		["1 gallon to litres", "1 gal = 3.785412 l"],
 		["1 gal to l", "1 gal = 3.785412 l"],
 		["1 liter to ml", "1 l = 1000 ml"],
-		["1 l to cups", "1 l = 4.226753 cup"],
+		["1 l to cups", "1 l = 4.226753 cups"],
 	]);
 });
 
@@ -67,7 +67,7 @@ test("speed: mph, km/h, m/s and knots", () => {
 		["100 km/hr to mph", "100 km/h = 62.137119 mph"],
 		["10 m/s to km/h", "10 m/s = 36 km/h"],
 		["1 knot to km/h", "1 knot = 1.852 km/h"],
-		["20 knots to mph", "20 knot = 23.015589 mph"],
+		["20 knots to mph", "20 knots = 23.015589 mph"],
 	]);
 });
 
@@ -90,7 +90,7 @@ test("digital: decimal as on macOS, KiB to TiB binary, bits spelled out or Mb", 
 		["1 kb to b", "1 KB = 1000 B"],
 		["1 kB to B", "1 KB = 1000 B"],
 		["1 TB to B", "1 TB = 1000000000000 B"],
-		["1 byte to bits", "1 B = 8 bit"],
+		["1 byte to bits", "1 B = 8 bits"],
 		["8 Mb to MB", "8 Mbit = 1 MB"],
 		["100 mbit to mb", "100 Mbit = 12.5 MB"],
 		["1 GiB to MiB", "1 GiB = 1024 MiB"],
@@ -246,7 +246,7 @@ test("mmHg is its own unit beside torr", () => {
 
 test("huge values round to 12 significant digits, with no float noise", () => {
 	converts([
-		["1.1 year to ns", "1.1 year = 34713360000000000 ns"],
+		["1.1 year to ns", "1.1 years = 34713360000000000 ns"],
 		["99999999999999999999 mi to in", "99999999999999999999 mi = 6.336e+24 in"],
 		["1234567890123456 m to m", "1234567890123456 m = 1234567890120000 m"],
 	]);
@@ -257,7 +257,7 @@ test("small values are written out down to 1e-15, then in exponent form", () => 
 		["5 ns to min", "5 ns = 0.0000000000833333 min"],
 		["1 mm to mi", "1 mm = 0.000000621371 mi"],
 		["1 mcg to t", "1 mcg = 0.000000000001 t"],
-		["1 ns to year", "1 ns = 3.16881e-17 year"],
+		["1 ns to year", "1 ns = 3.16881e-17 years"],
 	]);
 });
 
@@ -271,5 +271,19 @@ test("more names: pnt, Greek mu, sq feet, and Mm as megametres", () => {
 		["1 Mm to km", "1 Mm = 1000 km"],
 		["1 mm to m", "1 mm = 0.001 m"],
 		["1 MM to m", "1 mm = 0.001 m"],
+	]);
+});
+
+test("a word label is plural beside any number but 1; a symbol never is", () => {
+	converts([
+		["1 cup to ml", "1 cup = 236.588236 ml"],
+		["0.5 cup to ml", "0.5 cups = 118.294118 ml"],
+		["-1 year to month", "-1 year = -12 months"],
+		["12 months to years", "12 months = 1 year"],
+		["2 short tons to kg", "2 short tons = 1814.36948 kg"],
+		["16 bits to bytes", "16 bits = 2 B"],
+		["1 B to bit", "1 B = 8 bits"],
+		["14 days to weeks", "14 d = 2 weeks"],
+		["2 ft to in", "2 ft = 24 in"],
 	]);
 });
